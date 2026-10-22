@@ -61,6 +61,7 @@ import com.pulseloop.health.HealthConnectRemovalWorker
 import com.pulseloop.health.HealthConnectWatermarks
 import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.notifications.CoachNotifications
+import com.pulseloop.ring.ColmiFirmware
 import com.pulseloop.ring.MeasurementKind
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
@@ -1509,6 +1510,10 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val spo2IntervalSteps = ((60 - (minimumInterval - 5)) / 5 - 1).coerceAtLeast(0)
     val supportsStressSetting = WearableCapability.STRESS in capabilities &&
         device?.deviceType != RingDeviceType.YCBT
+    // Patched RY02KA firmware (Kogan Aura) runs the HR setting faster than it reads and logs stress /
+    // HRV on its own 6-minute grid: show what the ring actually does (ColmiFirmware).
+    val firmwareRevision = device?.firmwareVersion
+    val patchedStressHrvMinutes = ColmiFirmware.loggedStressAndHrvIntervalMinutes(firmwareRevision)
 
     var cfgHrEnabled by remember { mutableStateOf(true) }
     var cfgHrInterval by remember { mutableStateOf(5) }
@@ -1566,11 +1571,21 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                 } else {
                     VitalToggle("All-day heart rate", cfgHrEnabled) { cfgHrEnabled = it }
                     if (cfgHrEnabled) {
+                        // The ring is still sent the slider's value; patched firmware runs it faster.
+                        val loggedSeconds = ColmiFirmware.loggedHeartRateIntervalSeconds(cfgHrInterval, firmwareRevision)
                         Text(
-                            "Every $cfgHrInterval min",
+                            "Every " + (loggedSeconds?.let(ColmiFirmware::intervalLabel) ?: "$cfgHrInterval min"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (loggedSeconds != null) {
+                            Text(
+                                "Your ring's patched firmware measures more often than the setting it's sent: " +
+                                    "$cfgHrInterval min here means every ${ColmiFirmware.intervalLabel(loggedSeconds)}.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Slider(
                             enabled = cfgLoaded,
                             value = cfgHrInterval.toFloat(),
@@ -1615,6 +1630,14 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                     }
                     if (WearableCapability.TEMPERATURE in capabilities) {
                         VitalToggle("Temperature", cfgTemp) { cfgTemp = it }
+                    }
+                    if (patchedStressHrvMinutes != null) {
+                        Text(
+                            "Your ring's patched firmware logs stress and HRV every $patchedStressHrvMinutes minutes " +
+                                "and SpO₂ once an hour.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
 
                     Spacer(Modifier.height(12.dp))
