@@ -118,6 +118,9 @@ object ColmiCommandID {
     const val BIG_DATA_INTERVAL_TEMPERATURE: UByte = 0x77u
 
     // Sleep stage types
+    /** Fills the time between two sleep periods the ring joined into one night — an awakening of
+     *  10+ minutes (plus its 16-minute re-detection hold-off), or the ring off. Never sleep. */
+    const val SLEEP_GAP: UByte = 0x00u
     const val SLEEP_LIGHT: UByte = 0x02u
     const val SLEEP_DEEP: UByte = 0x03u
     const val SLEEP_REM: UByte = 0x04u
@@ -169,4 +172,50 @@ object ColmiBytes {
         a.toInt() or (b.toInt() shl 8) or (c.toInt() shl 16)
     fun u24be(a: UByte, b: UByte, c: UByte): Int =
         (a.toInt() shl 16) or (b.toInt() shl 8) or c.toInt()
+}
+
+/** Facts about specific Colmi firmware builds, keyed on the Device Information firmware revision. */
+object ColmiFirmware {
+    /** `n` of patched RY02KA firmware (`RY02KA_<version>_PATCH<n>`); null for stock firmware or any other ring. */
+    fun ry02kaPatchLevel(firmwareRevision: String): Int? {
+        val revision = firmwareRevision.trim()
+        if (!revision.startsWith("RY02KA_")) return null
+        val at = revision.lastIndexOf("_PATCH")
+        if (at < 0) return null
+        return revision.substring(at + "_PATCH".length).toIntOrNull()
+    }
+
+    /**
+     * Patched RY02KA firmware (`RY02KA_<version>_PATCH<n>`, n ≥ 3) sends sleep code 2 for every
+     * sleeping minute instead of the stock firmware's light / deep / REM split, which the stock
+     * firmware chooses with `rand()` — the ring only measures sleep onset, waking, and awake spells
+     * of 2+ minutes. On that firmware codes 2/3/4 mean "asleep, stage not measured".
+     */
+    fun reportsUnmeasuredSleepStages(firmwareRevision: String): Boolean =
+        (ry02kaPatchLevel(firmwareRevision) ?: 0) >= 3
+
+    /**
+     * How often the ring really logs heart rate at an all-day interval setting, in seconds, when
+     * that differs from the setting; null when the ring logs at the interval it was sent.
+     *
+     * From PATCH2 on, RY02KA firmware counts the `0x16` interval in 36-second units instead of
+     * minutes, so the app's 5…60 minutes run every 3…36 minutes (5 → 3, 10 → 6, 60 → 36). The setting
+     * sent to the ring is unchanged; only what the app tells the user it means.
+     */
+    fun loggedHeartRateIntervalSeconds(settingMinutes: Int, firmwareRevision: String?): Int? {
+        if (firmwareRevision == null || (ry02kaPatchLevel(firmwareRevision) ?: 0) < 2) return null
+        return settingMinutes * 36
+    }
+
+    /** The stress / HRV logging interval, in minutes, of firmware that fixes it independently of any
+     *  setting: every 6 minutes from RY02KA PATCH2 on. null for stock firmware (stress twice an hour,
+     *  HRV hourly) and other rings. */
+    fun loggedStressAndHrvIntervalMinutes(firmwareRevision: String?): Int? {
+        if (firmwareRevision == null || (ry02kaPatchLevel(firmwareRevision) ?: 0) < 2) return null
+        return 6
+    }
+
+    /** "3 min" / "36 s" — an interval in the units the Measurement screen shows. */
+    fun intervalLabel(seconds: Int): String =
+        if (seconds % 60 == 0) "${seconds / 60} min" else "$seconds s"
 }

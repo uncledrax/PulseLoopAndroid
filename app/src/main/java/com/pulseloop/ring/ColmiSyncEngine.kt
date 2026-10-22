@@ -47,7 +47,8 @@ class ColmiSyncEngine(
     // History state machine
     private enum class Stage { IDLE, ACTIVITY, HEART_RATE, STRESS, SPO2, SLEEP, HRV, TEMPERATURE, DONE }
 
-    private var stage = Stage.IDLE
+    // Volatile: read by the stage watchdog on its own thread ([forceAdvanceStage]).
+    @Volatile private var stage = Stage.IDLE
     private var daysAgo = 0
     private var syncDay = LocalDate.now(zone)
 
@@ -76,8 +77,25 @@ class ColmiSyncEngine(
     // Watchdog
     private var watchdogJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val watchdogTimeoutMs = 10_000L
-    private val activityWatchdogTimeoutMs = 20_000L
+    // Internal so tests can shorten them.
+    internal var watchdogTimeoutMs = 10_000L
+    internal var activityWatchdogTimeoutMs = 20_000L
+
+    /** The paged-history opcode most recently requested — the one [syncDay] belongs to. A page with
+     *  this opcode can still be dated after the watchdog has moved on to a big-data stage, so it is
+     *  decoded; a page with any other opcode can't be (HR pages carry no date), so it is dropped.
+     *  Only a page for the stage in flight advances the machine. */
+    @Volatile private var pagedOpcodeInFlight: UByte? = null
+
+    /** Whether the ring has answered anything in the current run (a history page, an empty-day
+     *  marker, or a big-data reply). A run the watchdog walked to the end with no reply at all
+     *  synced nothing, so it must not be reported as a finished sync. */
+    @Volatile private var receivedReplyThisRun = false
+
+    /** How the last run ended — the [PulseEvent.SyncProgress] stage [finishSync] published (`"done"`
+     *  or `"incomplete"`). null until a run finishes; a run the link cut off doesn't finish. */
+    @Volatile internal var lastRunOutcome: String? = null
+        private set
 
     // Realtime HR keepalive.
     // Volatile: written on Main (start/stop actions), read on the notify thread —
@@ -152,6 +170,41 @@ class ColmiSyncEngine(
          *  than the ring's ~10 s cadence by a margin for the optical warm-up (~25 s on the R09's
          *  SpO2 twin) and one missed push. */
         internal const val SPORT_TELEMETRY_IDLE_MS = 45_000L
+    }
+
+    // MARK: Link lifecycle
+
+    /**
+     * The link went down (or a new one came up). The client builds a fresh driver — and so a fresh
+     * engine — for every connection and never destroys the old one, so this is the only point at
+     * which the old engine's timers stop. Without it the stage watchdog kept stepping through the
+     * stages after a drop, writing history requests through the shared writer into the *next*
+     * connection's queue and finally publishing a "done" for a sync that never happened; the live-HR
+     * keepalive and sport watchdog kept writing into later connections the same way. Nothing is
+     * published here: a run the link cut off did not finish (the coordinator clears its progress on
+     * the disconnect itself), and a workout's stream is restarted on reconnect.
+     */
+    fun connectionDidEnd() = stopLinkWork()
+
+    /** See [connectionDidEnd]; also run when a link comes up, in case an engine outlives one. */
+    fun connectionDidStart() = stopLinkWork()
+
+    private fun stopLinkWork() {
+        watchdogJob?.cancel(); watchdogJob = null
+        sleepOnlyWatchdogJob?.cancel(); sleepOnlyWatchdogJob = null
+        realtimeKeepaliveJob?.cancel(); realtimeKeepaliveJob = null
+        sportWatchdogJob?.cancel(); sportWatchdogJob = null
+        sleepOnlyActive = false
+        realtimeHRActive = false
+        manualHRActive = false
+        manualSpO2Active = false
+        sportActive = false
+        stage = Stage.IDLE
+        daysAgo = 0
+        pagedOpcodeInFlight = null
+        resetStageMetadata()
+        lastIntervalTempPacket = -1
+        receivedReplyThisRun = false
     }
 
     override fun runStartup() {
@@ -344,6 +397,7 @@ class ColmiSyncEngine(
         sleepOnlyWatchdogJob?.cancel(); sleepOnlyWatchdogJob = null
         daysAgo = 0
         stage = Stage.ACTIVITY
+        receivedReplyThisRun = false
         requestActivity()
         armWatchdog()
     }
@@ -355,11 +409,30 @@ class ColmiSyncEngine(
     // MARK: Driver hooks
 
     fun handleHistoryFrame(data: ByteArray): List<RingDecodedEvent> {
+        // A page answers the last paged request, or it is a late reply to an earlier one whose day
+        // [syncDay] no longer holds (HR pages carry no date) — and whose terminal page would advance
+        // this stage's day. That one is dropped.
+        val opcode = data.firstOrNull()?.toUByte()
+        if (opcode == null || opcode != pagedOpcodeInFlight) return emptyList()
+        if (stage != Stage.IDLE && stage != Stage.DONE) receivedReplyThisRun = true
         captureStageMetadata(data)
         val events = decoder.decodeHistory(data, day = syncDay, slotMinutes = slotMinutes)
-        advanceAfterPagedFrame(data)
-        armWatchdog()
+        // Only the stage in flight moves on: a straggling page after the watchdog went to a big-data
+        // stage is still decoded under its own day, but must not advance anything.
+        if (opcode == historyOpcode(stage)) {
+            advanceAfterPagedFrame(data)
+            armWatchdog()
+        }
         return events
+    }
+
+    /** The paged-history opcode a stage requests; null for stages that page nothing. */
+    private fun historyOpcode(stage: Stage): UByte? = when (stage) {
+        Stage.ACTIVITY -> ColmiCommandID.SYNC_ACTIVITY
+        Stage.HEART_RATE -> ColmiCommandID.SYNC_HEART_RATE
+        Stage.STRESS -> ColmiCommandID.SYNC_STRESS
+        Stage.HRV -> ColmiCommandID.SYNC_HRV
+        else -> null
     }
 
     /**
@@ -409,6 +482,9 @@ class ColmiSyncEngine(
     }
 
     fun handleBigDataComplete(type: UByte, data: ByteArray? = null) {
+        // Any big-data reply during a run is data the driver stored, so the run synced something —
+        // even a late one the stage guards below don't let advance the pipeline.
+        if (stage != Stage.IDLE && stage != Stage.DONE) receivedReplyThisRun = true
         when (type) {
             ColmiCommandID.BIG_DATA_SPO2 -> {
                 // Same stray-frame guard as SLEEP/TEMPERATURE below: rings can re-emit a big-data
@@ -487,12 +563,14 @@ class ColmiSyncEngine(
     private fun requestActivity() {
         syncDay = dayStart(daysAgo)
         resetStageMetadata()
+        pagedOpcodeInFlight = ColmiCommandID.SYNC_ACTIVITY
         writer?.enqueue(encoder.syncActivity(daysAgo))
     }
 
     private fun requestHeartRate() {
         syncDay = dayStart(daysAgo)
         resetStageMetadata()
+        pagedOpcodeInFlight = ColmiCommandID.SYNC_HEART_RATE
         // The ring indexes its daily HR logs on "local wall clock read as UTC": QRing sends
         // localMidnightEpoch + tzOffset (= the calendar date at 00:00 UTC) and subtracts the
         // offset back from the echo. Sending the true local-midnight epoch landed inside the
@@ -504,12 +582,14 @@ class ColmiSyncEngine(
     private fun requestStress() {
         syncDay = dayStart(daysAgo)
         resetStageMetadata()
+        pagedOpcodeInFlight = ColmiCommandID.SYNC_STRESS
         writer?.enqueue(encoder.syncStress(daysAgo))
     }
 
     private fun requestHRV() {
         syncDay = dayStart(daysAgo)
         resetStageMetadata()
+        pagedOpcodeInFlight = ColmiCommandID.SYNC_HRV
         writer?.enqueue(encoder.syncHRV(daysAgo))
     }
 
@@ -567,7 +647,9 @@ class ColmiSyncEngine(
      * stress/HRV) meant an HR day with data NEVER completed: the watchdog force-skipped the
      * whole stage and days 1..7 were never requested. Fallbacks when packet 0 was missed:
      * stress/HRV keep the old size-5 assumption; HR ends on packet 23 (24 packets ≥ a full
-     * 5-min-cadence day — QRing's today-cap) or the watchdog.
+     * 5-min-cadence day — QRing's today-cap) or the watchdog. The packet-23 fallback applies only
+     * when no header was seen: a 3-minute log (patched RY02KA firmware, header `15 00 27 03`) has
+     * 39 packets, and ending it at 23 filed packets 24…38 under the next requested day.
      */
     private fun isTerminalPacket(data: ByteArray): Boolean {
         val v = data.map { it.toUByte() }
@@ -577,7 +659,7 @@ class ColmiSyncEngine(
             ColmiCommandID.SYNC_STRESS, ColmiCommandID.SYNC_HRV ->
                 packetNr >= 2 && packetNr == (expectedPackets ?: 5) - 1
             ColmiCommandID.SYNC_HEART_RATE ->
-                (packetNr >= 2 && packetNr == (expectedPackets ?: -1) - 1) || packetNr == 23
+                packetNr >= 2 && packetNr == (expectedPackets ?: 24) - 1
             // Gate the steps/day-count equality off the 0xF0 header packet — QRing evaluates it
             // only for data packets, and a header satisfying it would end the day early.
             ColmiCommandID.SYNC_ACTIVITY ->
@@ -599,6 +681,9 @@ class ColmiSyncEngine(
     }
 
     private fun forceAdvanceStage(stuck: Stage) {
+        // A watchdog already past its delay when the stage moved on (a reply arrived, or the link
+        // ended and [stopLinkWork] parked the engine) must not act on a stage that is no longer current.
+        if (stage != stuck) return
         when (stuck) {
             Stage.ACTIVITY -> { daysAgo = 0; stage = Stage.HEART_RATE; requestHeartRate() }
             Stage.HEART_RATE -> { daysAgo = 0; stage = Stage.STRESS; requestStress() }
@@ -616,12 +701,17 @@ class ColmiSyncEngine(
         stage = Stage.DONE
         watchdogJob?.cancel()
         watchdogJob = null
+        // A run the watchdog walked to the end without a single reply (a link that died before
+        // Android reported it) synced nothing: it ends "incomplete", which clears the progress bar
+        // but stamps no lastFullSyncAt and wakes no coach. Otherwise "done", as below.
+        val outcome = if (receivedReplyThisRun) "done" else "incomplete"
+        lastRunOutcome = outcome
         // iOS publishes `.syncProgress("done")` here — it is the ONLY signal that stamps
         // `DeviceEntity.lastFullSyncAt`, and without it every freshness consumer silently
         // degrades for Colmi rings: the coach check-in skip gate and done-wait (#61c), the
         // >12h staleness warning, the morning sleep-sync gate (#65f), the summary
         // coordinator's sync recheck, and the post-workout vitals reconcile (#57e).
-        PulseEventBus.publishBlocking(PulseEvent.SyncProgress("done"))
+        PulseEventBus.publishBlocking(PulseEvent.SyncProgress(outcome))
     }
 
     // MARK: Measurement actions

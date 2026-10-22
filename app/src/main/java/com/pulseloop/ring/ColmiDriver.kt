@@ -15,6 +15,11 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
     // (Rings stream one big-data reply at a time; QRing has never handled interleaving.)
     private var bigDataBuffer: ByteArray? = null
 
+    /** Set from this connection's Device Information firmware revision: patched RY02KA firmware
+     *  sends sleep without a light/deep/REM split ([ColmiFirmware]). Volatile: written from the GATT
+     *  read callback, read on the notify thread. */
+    @Volatile private var sleepStagesUnmeasured = false
+
     /** Samples already decoded from earlier packets of the current interval-temperature day —
      *  slot position is cumulative across a day's packets (see decodeIntervalTemperature). */
     private var intervalTempSampleOffset = 0
@@ -34,6 +39,26 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
 
     override fun usesCommandChannel(frame: ByteArray): Boolean =
         frame.isNotEmpty() && frame[0].toUByte() == ColmiCommandID.BIG_DATA_V2
+
+    // Firmware: cleared per link (the ring may have been reflashed), set again from that link's DIS.
+    // Only a match sets it, so whichever of 2A26 / 2A28 arrives second can't clear it.
+    override fun connectionDidStart() {
+        sleepStagesUnmeasured = false
+        bigDataBuffer = null
+        intervalTempSampleOffset = 0
+        engine.connectionDidStart()
+    }
+
+    /** The client calls only the driver; the engine's timers must stop with the link (see
+     *  [ColmiSyncEngine.connectionDidEnd]), and a big-data reply the link cut off never completes. */
+    override fun connectionDidEnd() {
+        bigDataBuffer = null
+        engine.connectionDidEnd()
+    }
+
+    override fun firmwareRevisionDidUpdate(revision: String) {
+        if (ColmiFirmware.reportsUnmeasuredSleepStages(revision)) sleepStagesUnmeasured = true
+    }
 
     override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> {
         return if (from == ColmiUUIDs.NOTIFY_V2) {
@@ -89,7 +114,7 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
             intervalTempSampleOffset += ((buffer.size - 10).coerceAtLeast(0)) / 2
             decoded
         } else {
-            decoder.decodeBigData(buffer)
+            decoder.decodeBigData(buffer, sleepStagesUnmeasured = sleepStagesUnmeasured)
         }
         engine.handleBigDataComplete(type = type, data = buffer)
         return events

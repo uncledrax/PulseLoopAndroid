@@ -1103,7 +1103,12 @@ class RingSyncCoordinator(
             is PulseEvent.HistoryMeasurement -> {
                 advanceSyncProgress(event.timestamp.toEpochMilli())
             }
-            is PulseEvent.SyncProgress -> if (event.stage == "done") finishSyncProgressSoon()
+            is PulseEvent.SyncProgress -> when (event.stage) {
+                "done" -> finishSyncProgressSoon()
+                // A Colmi run the ring answered nothing in: over, but there is nothing to show as 100%.
+                "incomplete" -> clearSyncProgress()
+                else -> {}
+            }
             else -> {}
         }
     }

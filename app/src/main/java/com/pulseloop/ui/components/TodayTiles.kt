@@ -250,6 +250,8 @@ fun buildSleepStageSegments(
         SleepStageSegment(byStage["DEEP"] ?: 0.0, PulseColors.stageDeep, "DEEP"),
         SleepStageSegment(byStage["LIGHT"] ?: 0.0, PulseColors.stageLight, "LIGHT"),
         SleepStageSegment(byStage["REM"] ?: 0.0, PulseColors.stageRem, "REM"),
+        // Sleep with no stage measured (patched RY02KA firmware reports asleep / awake only).
+        SleepStageSegment(byStage["UNKNOWN"] ?: 0.0, PulseColors.textMuted, "SLEEP"),
         SleepStageSegment(byStage["AWAKE"] ?: 0.0, PulseColors.stageAwake, "AWK"),
     ).filter { it.minutes > 0 }
 }
