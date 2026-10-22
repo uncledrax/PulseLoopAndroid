@@ -1848,6 +1848,7 @@ class RingBLEClient(
                        characteristic.uuid.toString().startsWith("00002a28")) {
                 val fw = value?.let { String(it) }?.trim()
                 if (fw != null && fw.isNotEmpty()) {
+                    activeDriver?.firmwareRevisionDidUpdate(fw)
                     updateState { copy(firmwareVersion = fw) }
                     onFirmwareRead?.invoke(fw)
                 }

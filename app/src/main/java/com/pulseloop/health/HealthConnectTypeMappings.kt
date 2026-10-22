@@ -511,16 +511,19 @@ object HealthConnectTypeMappings {
 
     /**
      * [com.pulseloop.data.entity.SleepStageBlockEntity.stageRaw] (a [SleepStage] name) → the
-     * client's [SleepSessionRecord] stage-type constant (plan Phase 2). Anything unrecognized
-     * degrades to [SleepSessionRecord.STAGE_TYPE_UNKNOWN] rather than being dropped — the block
-     * is real sleep time, just unclassified.
+     * client's [SleepSessionRecord] stage-type constant (plan Phase 2). [SleepStage.UNKNOWN] is
+     * real sleep time whose stage wasn't classified — an unrecognised stage byte inside a sleep
+     * record, or patched RY02KA firmware that reports asleep / awake only — which is exactly Health
+     * Connect's [SleepSessionRecord.STAGE_TYPE_SLEEPING] ("asleep, stage unknown"), and what iOS
+     * exports as `asleepUnspecified`. An unrecognised *stageRaw* string degrades to
+     * [SleepSessionRecord.STAGE_TYPE_UNKNOWN] rather than being dropped.
      */
     fun sleepStageType(stageRaw: String): Int = when (stageRaw) {
         SleepStage.DEEP.name -> SleepSessionRecord.STAGE_TYPE_DEEP
         SleepStage.LIGHT.name -> SleepSessionRecord.STAGE_TYPE_LIGHT
         SleepStage.REM.name -> SleepSessionRecord.STAGE_TYPE_REM
         SleepStage.AWAKE.name -> SleepSessionRecord.STAGE_TYPE_AWAKE
-        SleepStage.UNKNOWN.name -> SleepSessionRecord.STAGE_TYPE_UNKNOWN
+        SleepStage.UNKNOWN.name -> SleepSessionRecord.STAGE_TYPE_SLEEPING
         else -> SleepSessionRecord.STAGE_TYPE_UNKNOWN
     }
 

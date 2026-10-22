@@ -157,8 +157,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     viewModel: SleepViewModel? = null,
 ) {
     item { SessionHero(session, blocks) }
+    val unstaged = com.pulseloop.service.stagesUnmeasured(blocks)
     item {
-        VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
+        VisualizationCard(
+            eyebrow = "Stages", title = if (unstaged) "Asleep and awake" else "Sleep architecture",
+            legend = true, unstaged = unstaged,
+        ) {
             SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = session.spanMinutes, startTs = session.startAt)
         }
     }
@@ -177,6 +181,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
             // Awake counts the between-record gaps too (issue #81) — the same minutes this page's
             // RECORDS card labels "Awake Xm between".
             awake = SleepFormat.duration(com.pulseloop.service.awakeMinutes(blocks)),
+            asleep = if (unstaged) SleepFormat.duration(byStage["UNKNOWN"] ?: 0) else null,
         )
     }
 }
@@ -222,7 +227,11 @@ private fun SleepCarousel(
                     letterSpacing = 0.8.sp, color = PulseColors.textSecondary,
                 )
                 SessionHero(s, blocks)
-                VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
+                val unstaged = com.pulseloop.service.stagesUnmeasured(blocks)
+                VisualizationCard(
+                    eyebrow = "Stages", title = if (unstaged) "Asleep and awake" else "Sleep architecture",
+                    legend = true, unstaged = unstaged,
+                ) {
                     SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = s.spanMinutes, startTs = s.startAt)
                 }
                 // Unlike the single-session page, shown even for a one-record session: on a
@@ -235,6 +244,7 @@ private fun SleepCarousel(
                     deep = SleepFormat.duration(byStage["DEEP"] ?: 0),
                     light = SleepFormat.duration(byStage["LIGHT"] ?: 0),
                     awake = SleepFormat.duration(com.pulseloop.service.awakeMinutes(blocks)),
+                    asleep = if (unstaged) SleepFormat.duration(byStage["UNKNOWN"] ?: 0) else null,
                 )
             }
         }
@@ -413,6 +423,8 @@ private fun VisualizationCard(
     eyebrow: String,
     title: String,
     legend: Boolean,
+    /** Legend for a night recorded as asleep / awake only. */
+    unstaged: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val shape = RoundedCornerShape(22.dp)
@@ -436,9 +448,13 @@ private fun VisualizationCard(
             }
             if (legend) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LegendItem("Deep", PulseColors.stageDeep)
-                    LegendItem("Light", PulseColors.stageLight)
-                    LegendItem("REM", PulseColors.stageRem)
+                    if (unstaged) {
+                        LegendItem("Asleep", PulseColors.textMuted)
+                    } else {
+                        LegendItem("Deep", PulseColors.stageDeep)
+                        LegendItem("Light", PulseColors.stageLight)
+                        LegendItem("REM", PulseColors.stageRem)
+                    }
                     LegendItem("Awake", PulseColors.stageAwake)
                 }
             }
@@ -470,17 +486,26 @@ private fun SleepHypnogram(
     startTs: Long,
     height: androidx.compose.ui.unit.Dp = 210.dp,
 ) {
-    val lanes = listOf("AWAKE", "REM", "LIGHT", "DEEP")
+    // UNKNOWN is sleep with no stage measured (patched RY02KA firmware reports asleep / awake only;
+    // HealthConnect exports it as "sleeping"). A night of only that gets AWAKE / ASLEEP lanes rather
+    // than four lanes of which three stay empty; on a mixed night its blocks draw muted in the light
+    // lane.
+    val unstagedOnly = remember(blocks) {
+        blocks.any { it.stageRaw == "UNKNOWN" } && blocks.none { it.stageRaw in setOf("LIGHT", "DEEP", "REM") }
+    }
+    val lanes = if (unstagedOnly) listOf("AWAKE", "UNKNOWN") else listOf("AWAKE", "REM", "LIGHT", "DEEP")
     val laneFrac = mapOf("AWAKE" to 0.15f, "REM" to 0.38f, "LIGHT" to 0.62f, "DEEP" to 0.85f, "UNKNOWN" to 0.62f)
     fun stageColor(stage: String): Color = when (stage) {
         "DEEP" -> PulseColors.stageDeep
         "LIGHT" -> PulseColors.stageLight
         "REM" -> PulseColors.stageRem
         "AWAKE" -> PulseColors.stageAwake
+        "UNKNOWN" -> PulseColors.textMuted
         else -> PulseColors.stageLight
     }
+    fun stageName(stage: String): String = if (stage == "UNKNOWN") "ASLEEP" else stage
     val sorted = remember(blocks) {
-        blocks.filter { it.durationMinutes > 0 && it.stageRaw != "UNKNOWN" }.sortedBy { it.startMinute }
+        blocks.filter { it.durationMinutes > 0 }.sortedBy { it.startMinute }
     }
     // The x axis is wall-clock time, so it is scaled by the session's SPAN, never by its duration.
     // Since issue #63 those are different numbers — `totalMinutes` is time asleep and excludes the
@@ -529,7 +554,7 @@ private fun SleepHypnogram(
     }
 
     fun readoutText(block: SleepStageBlockEntity): String {
-        val stage = block.stageRaw.replaceFirstChar { it.uppercase() }
+        val stage = stageName(block.stageRaw)
         val startTime = clockTime(startTs + block.startMinute * 60_000L)
         val endTime = clockTime(startTs + (block.startMinute + block.durationMinutes) * 60_000L)
         return "$stage · $startTime – $endTime"
@@ -654,7 +679,7 @@ private fun SleepHypnogram(
                             val yFrac = laneFrac[stage] ?: 0.62f
                             val labelY = yFrac * plotHeightPx
                             Text(
-                                stage,
+                                stageName(stage),
                                 fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
                                 letterSpacing = 1.4.sp, color = stageColor(stage),
                                 modifier = Modifier.offset {
@@ -715,10 +740,21 @@ private fun SleepHypnogram(
 
 /** Three side-by-side stage duration cards (SleepStageSummaryCardsView in Swift). */
 @Composable
-private fun SleepStageSummaryCards(prefix: String = "", deep: String, light: String, awake: String) {
+private fun SleepStageSummaryCards(
+    prefix: String = "",
+    deep: String,
+    light: String,
+    awake: String,
+    /** Set for a night recorded as asleep / awake only: Asleep and Awake replace the stage split. */
+    asleep: String? = null,
+) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        StageStat("${prefix}Deep", deep, PulseColors.stageDeep, Modifier.weight(1f))
-        StageStat("${prefix}Light", light, PulseColors.stageLight, Modifier.weight(1f))
+        if (asleep != null) {
+            StageStat("${prefix}Asleep", asleep, PulseColors.textMuted, Modifier.weight(1f))
+        } else {
+            StageStat("${prefix}Deep", deep, PulseColors.stageDeep, Modifier.weight(1f))
+            StageStat("${prefix}Light", light, PulseColors.stageLight, Modifier.weight(1f))
+        }
         StageStat("${prefix}Awake", awake, PulseColors.stageAwake, Modifier.weight(1f))
     }
 }

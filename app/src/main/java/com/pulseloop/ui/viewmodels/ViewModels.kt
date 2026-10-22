@@ -325,10 +325,13 @@ class SleepViewModel(
         val collapsedBlocks = collapsed.associate { it.session.id to it.blocks }
         val lookup: (String) -> List<SleepStageBlockEntity> = { collapsedBlocks[it] ?: emptyList() }
         val valid = SleepInsights.validSessions(collapsedSessions)
-        val stageAvg = if (valid.isEmpty()) null else Triple(
-            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / valid.size,
-            valid.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / valid.size,
-            valid.sumOf { s -> com.pulseloop.service.awakeMinutes(lookup(s.id)) } / valid.size,
+        // Nights whose stages weren't measured are left out of the stage averages: their zero deep
+        // and light would drag the averages down rather than describe anything.
+        val staged = valid.filterNot { com.pulseloop.service.stagesUnmeasured(lookup(it.id)) }
+        val stageAvg = if (staged.isEmpty()) null else Triple(
+            staged.sumOf { s -> lookup(s.id).filter { it.stageRaw == "DEEP" }.sumOf { b -> b.durationMinutes } } / staged.size,
+            staged.sumOf { s -> lookup(s.id).filter { it.stageRaw == "LIGHT" }.sumOf { b -> b.durationMinutes } } / staged.size,
+            staged.sumOf { s -> com.pulseloop.service.awakeMinutes(lookup(s.id)) } / staged.size,
         )
         val bars = when (range) {
             SleepRangeKey.YEAR -> SleepInsights.buildMonthBuckets(anchor, collapsedSessions, lookup)

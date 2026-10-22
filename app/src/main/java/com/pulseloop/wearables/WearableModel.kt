@@ -102,6 +102,10 @@ data class WearableModel(
                 WearableCapability.MANUAL_STRESS,
                 WearableCapability.MANUAL_TEMPERATURE,
             ))
+        // The Kogan Aura is an Australian rebadge of the Colmi R02 on RY02KA hardware: it advertises
+        // its full name with no `_<hex>` serial, reports hardware `RY02KA_V3.0`, and runs QRing
+        // firmware (`RY02KA_3.00.31`) over the same UART/big-data pair as the rest of this family.
+        val KOGAN_AURA = colmi("kogan-aura", "Kogan Aura", "Kogan", "^Kogan Aura$", R.drawable.ring_colmi_r02)
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
@@ -251,7 +255,7 @@ data class WearableModel(
         /** Every supported model. The pairing screen groups by brand and sorts each tab alphabetically. */
         val CATALOG: List<WearableModel> = listOf(
             COLMI_R02, COLMI_R06, COLMI_R10, YAWELL_R11, JRING,
-            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12, COLMI_RING_2_PRO,
+            COLMI_R03, COLMI_R07, COLMI_R08, COLMI_R09, COLMI_R11, COLMI_R12, COLMI_RING_2_PRO, KOGAN_AURA,
             YAWELL_R05, YAWELL_R10, H59, R10M, TK5, LUCK_RING_TK18, COLMI_R11_CRP, R100, RWFIT,
             // Broadest pattern last: every narrower QRing-Colmi/TK5 entry above gets first shot
             // in modelForAdvertisedName's scan, so this can only match a name nothing else claims.

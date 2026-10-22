@@ -195,7 +195,9 @@ object SleepRecordDeletion {
                     startAt = row.startAt,
                     endAt = row.endAt,
                     totalMinutes = totalMin,
-                    score = com.pulseloop.service.sleepStageScore(deepMin, totalMin),
+                    score = com.pulseloop.service.sleepStageScore(
+                        deepMin, totalMin, com.pulseloop.service.stagesUnmeasured(row.blocks),
+                    ),
                     updatedAt = now,
                 ),
             )

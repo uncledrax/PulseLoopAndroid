@@ -567,7 +567,9 @@ class ColmiSyncEngine(
      * stress/HRV) meant an HR day with data NEVER completed: the watchdog force-skipped the
      * whole stage and days 1..7 were never requested. Fallbacks when packet 0 was missed:
      * stress/HRV keep the old size-5 assumption; HR ends on packet 23 (24 packets ≥ a full
-     * 5-min-cadence day — QRing's today-cap) or the watchdog.
+     * 5-min-cadence day — QRing's today-cap) or the watchdog. The packet-23 fallback applies only
+     * when no header was seen: a 3-minute log (patched RY02KA firmware, header `15 00 27 03`) has
+     * 39 packets, and ending it at 23 filed packets 24…38 under the next requested day.
      */
     private fun isTerminalPacket(data: ByteArray): Boolean {
         val v = data.map { it.toUByte() }
@@ -577,7 +579,7 @@ class ColmiSyncEngine(
             ColmiCommandID.SYNC_STRESS, ColmiCommandID.SYNC_HRV ->
                 packetNr >= 2 && packetNr == (expectedPackets ?: 5) - 1
             ColmiCommandID.SYNC_HEART_RATE ->
-                (packetNr >= 2 && packetNr == (expectedPackets ?: -1) - 1) || packetNr == 23
+                packetNr >= 2 && packetNr == (expectedPackets ?: 24) - 1
             // Gate the steps/day-count equality off the 0xF0 header packet — QRing evaluates it
             // only for data packets, and a header satisfying it would end the day early.
             ColmiCommandID.SYNC_ACTIVITY ->

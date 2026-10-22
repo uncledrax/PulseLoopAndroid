@@ -61,6 +61,13 @@ interface WearableDriver {
     fun connectionDidEnd() {}
 
     /**
+     * The ring's Device Information firmware revision (`2A26` / `2A28`) was read on this connection.
+     * For a driver whose decoding depends on the firmware build — Colmi: patched RY02KA firmware that
+     * reports sleep without stages ([ColmiFirmware]). Both characteristics land here, in either order.
+     */
+    fun firmwareRevisionDidUpdate(revision: String) {}
+
+    /**
      * The connected GATT's full service table, delivered once after discovery.
      *
      * For families whose wire format isn't decidable from the advertisement: RWfit serves one data

@@ -85,6 +85,7 @@ object SleepScore {
         val deep = minutesFor(SleepStage.DEEP, SleepStage.REM)
         val light = minutesFor(SleepStage.LIGHT)
         val awake = minutesFor(SleepStage.AWAKE)
+        val unmeasured = stagesUnmeasured(blocks)
         val coveredStageMin = blocks.sumOf { it.durationMinutes.toDouble() }
         val hasAwakeSignal = blocks.any { it.stageRaw == SleepStage.AWAKE.name } ||
             awake > 0 || (span > 0 && coveredStageMin >= span * 0.95)
@@ -98,6 +99,18 @@ object SleepScore {
         val deepScore = bandScore(deepPct, 13.0, 23.0, 5.0, 35.0, 0.0, 45.0, 30.0)
         val lightScore = bandScore(lightPct, 50.0, 60.0, 35.0, 75.0, 20.0, 90.0, 20.0)
         val awakeSub = awakeScore(awakePct, 15.0)
+        if (unmeasured) {
+            // No stage mix to score (see [stagesUnmeasured]): duration (35) and awake time (15)
+            // carry the whole score, rather than a "no deep sleep" penalty for a stage nobody measured.
+            val unstagedScore = clamp(((duration + awakeSub) * 2).roundToInt().toDouble(), 0.0, 100.0).toInt()
+            return SleepScoreResult(
+                score = unstagedScore,
+                label = qualityLabel(unstagedScore),
+                deepPct = 0,
+                lightPct = 0,
+                awakePct = awakePct?.roundToInt(),
+            )
+        }
         val score = clamp((duration + deepScore + lightScore + awakeSub).roundToInt().toDouble(), 0.0, 100.0).toInt()
 
         return SleepScoreResult(
@@ -140,6 +153,24 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
     blocks.filter { it.stageRaw != SleepStage.AWAKE.name }
         .sumOf { it.durationMinutes }
         .coerceAtLeast(0)
+
+/** Minutes asleep with no stage measured ([SleepStage.UNKNOWN] blocks). */
+fun unstagedMinutes(blocks: List<SleepStageBlockEntity>): Int =
+    blocks.filter { it.stageRaw == SleepStage.UNKNOWN.name }.sumOf { it.durationMinutes }
+
+/**
+ * Most of this night's sleep carries no stage, so stage percentages — and anything scored or said
+ * from them — don't describe it. Patched RY02KA firmware reports sleep as asleep / awake only
+ * (`ColmiFirmware.reportsUnmeasuredSleepStages`), because the light / deep / REM split the stock
+ * firmware sends is chosen by `rand()`, not measured.
+ */
+fun stagesUnmeasured(blocks: List<SleepStageBlockEntity>): Boolean {
+    val unstaged = unstagedMinutes(blocks)
+    val staged = blocks.filter {
+        it.stageRaw == SleepStage.LIGHT.name || it.stageRaw == SleepStage.DEEP.name || it.stageRaw == SleepStage.REM.name
+    }.sumOf { it.durationMinutes }
+    return unstaged > 0 && unstaged >= staged
+}
 
 /**
  * Awake minutes for a session, including the short gaps between its ring records (issue #81).
@@ -224,8 +255,9 @@ fun hypnogramBlocks(blocks: List<SleepStageBlockEntity>): List<SleepStageBlockEn
  * `SleepRecordDeletion` restates with the same function so a post-deletion row agrees with what
  * the next sync would write (issue #78).
  */
-fun sleepStageScore(deepMin: Int, totalMin: Int): Int? {
-    if (totalMin == 0) return null
+fun sleepStageScore(deepMin: Int, totalMin: Int, stagesUnmeasured: Boolean = false): Int? {
+    // Deep-percentage bands say nothing about a night whose stages weren't measured.
+    if (totalMin == 0 || stagesUnmeasured) return null
     val deepPct = (deepMin.toFloat() / totalMin * 100).toInt()
     return when {
         deepPct >= 20 -> 90
@@ -449,6 +481,7 @@ object SleepInsights {
         activitySteps: Int?,
     ): SleepCoach {
         val score = SleepScore.calculate(session, blocks)
+        if (stagesUnmeasured(blocks)) return unstagedDayCoach(session, score.awakePct)
         val deepPct = score.deepPct
         val awakePct = score.awakePct
         val chips = mutableListOf<String>()
@@ -482,6 +515,25 @@ object SleepInsights {
             "Your sleep was in a workable range, with the score shaped mostly by duration and stage balance. Deep and light sleep were readable enough to give a useful recovery snapshot.",
             chips.ifEmpty { listOf("Good") }.take(3),
         )
+    }
+
+    /** Day coach for a night recorded as asleep / awake only: duration and wakefulness, never a
+     *  stage mix that wasn't measured. */
+    private fun unstagedDayCoach(session: SleepSessionEntity, awakePct: Int?): SleepCoach {
+        val note = "Your ring records when you're asleep and awake but not the stage of sleep, " +
+            "so this night is shown as asleep and awake only."
+        val chips = mutableListOf("Stages not measured")
+        if (session.totalMinutes in 420..540) chips.add(0, "Good duration")
+        if (awakePct != null && awakePct <= 10) chips.add("Awake time low")
+        if (awakePct != null && awakePct > 15) {
+            return SleepCoach("Some restlessness", "Awake time was a bit elevated. $note",
+                (listOf("Awake time elevated") + chips).take(3))
+        }
+        if (session.totalMinutes < 390) {
+            return SleepCoach("Short night", "Total sleep time was short for a full recovery window. $note",
+                (listOf("Short duration") + chips).take(3))
+        }
+        return SleepCoach("Steady night", "$note The score is based on duration and awake time.", chips.take(3))
     }
 
     val dayNoDataCoach = SleepCoach(

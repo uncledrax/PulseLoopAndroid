@@ -748,6 +748,29 @@ drives the cadence, which is the near-constant LED and ~10 s readings the report
   the diagnostics section below warns about.
 - Untested on hardware as of this note: the reporter (issue #64, Colmi R09) has the ring.
 
+## Colmi RY02KA (Kogan Aura): what the firmware measures, and patched firmware
+
+Found by emulating the RY02KA_3.00.31 firmware's own code, stock and patched. Four rules follow.
+
+- **A paged day's length comes from its page 0, never a constant.** Patched RY02KA firmware logs
+  heart rate every 3 minutes (`15 00 27 03`, 39 pages) and stress / HRV every 6 (`37|39 00 14 06`,
+  20 pages). `ColmiSyncEngine.isTerminalPacket` keeps its page-23 HR fallback only for a day with no
+  header. Ending a 39-page day at 23 asked for the next day mid-stream and filed pages 24-38 under it.
+- **Sleep code 0 is awake.** The ring writes it between two sleep periods it joins into one night:
+  an awakening of 10+ minutes plus its 16-minute re-detection hold-off, or the ring off. Decoded as
+  `UNKNOWN`, `asleepMinutes` counted it as sleep.
+- **A night's segments add up to its start→end span**, exactly, on every night we have: the captured
+  Ring 2 Pro night and the emulated RY02KA nights. RY02KA does not bound its 40-segment arrays, so a
+  restless night overflows them and the `0x27` reply carries memory leftovers as stages.
+  `ColmiDecoder` drops a night whose segments miss its span (`segmentsMatchSpan`).
+- **Stock RY02KA light / deep / REM is chosen by `rand()`.** Only onset, waking and awake spells of 2+
+  minutes are measured. Patched firmware from PATCH3 on (`RY02KA_<ver>_PATCH<n>`, n ≥ 3, from DIS
+  `2A26`) sends code 2 for all sleep. `ColmiDriver.firmwareRevisionDidUpdate` sees that, and its sleep
+  decodes as `UNKNOWN`, meaning asleep with no stage measured. `stagesUnmeasured(blocks)` is what the
+  UI keys on: it shows "Asleep", scores on duration and awake time only, leaves the night out of
+  stage averages, and stores no deep-band score. Health Connect gets `UNKNOWN` as
+  `STAGE_TYPE_SLEEPING`.
+
 ## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
 
 History measurements are keyed `history:<kind>:<timestamp>` and written with `upsert`, on purpose:

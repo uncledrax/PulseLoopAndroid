@@ -176,11 +176,13 @@ class HealthConnectTypeMappingsTest {
         assertEquals(SleepSessionRecord.STAGE_TYPE_LIGHT, HealthConnectTypeMappings.sleepStageType(SleepStage.LIGHT.name))
         assertEquals(SleepSessionRecord.STAGE_TYPE_REM, HealthConnectTypeMappings.sleepStageType(SleepStage.REM.name))
         assertEquals(SleepSessionRecord.STAGE_TYPE_AWAKE, HealthConnectTypeMappings.sleepStageType(SleepStage.AWAKE.name))
-        assertEquals(SleepSessionRecord.STAGE_TYPE_UNKNOWN, HealthConnectTypeMappings.sleepStageType(SleepStage.UNKNOWN.name))
+        // UNKNOWN is sleep with an unclassified stage — Health Connect's "asleep, stage unknown".
+        assertEquals(SleepSessionRecord.STAGE_TYPE_SLEEPING, HealthConnectTypeMappings.sleepStageType(SleepStage.UNKNOWN.name))
         // Pin the connect-client 1.1.0 constant values (javap + decompiled source) so a silent
         // library change fails here, not in the field.
         assertEquals(0, SleepSessionRecord.STAGE_TYPE_UNKNOWN)
         assertEquals(1, SleepSessionRecord.STAGE_TYPE_AWAKE)
+        assertEquals(2, SleepSessionRecord.STAGE_TYPE_SLEEPING)
         assertEquals(4, SleepSessionRecord.STAGE_TYPE_LIGHT)
         assertEquals(5, SleepSessionRecord.STAGE_TYPE_DEEP)
         assertEquals(6, SleepSessionRecord.STAGE_TYPE_REM)

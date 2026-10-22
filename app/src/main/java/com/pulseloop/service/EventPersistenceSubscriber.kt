@@ -736,7 +736,7 @@ class EventPersistenceSubscriber(
             val deepMin = seg.blocks
                 .filter { it.stageRaw == SleepStage.DEEP.name }
                 .sumOf { it.durationMinutes }
-            val score = computeSleepScore(deepMin, totalMin)
+            val score = computeSleepScore(deepMin, totalMin, stagesUnmeasured(seg.blocks))
 
             // Parent session BEFORE its blocks (FK sleep_stage_blocks -> sleep_sessions.id).
             db.sleepSessionDao().upsert(
@@ -828,10 +828,10 @@ class EventPersistenceSubscriber(
      * Medical research: optimal deep sleep = 15-25% of total.
      * Matches the official app's scoring.
      */
-    private fun computeSleepScore(deepMin: Int, totalMin: Int): Int? =
+    private fun computeSleepScore(deepMin: Int, totalMin: Int, stagesUnmeasured: Boolean): Int? =
         // Delegates since issue #78: SleepRecordDeletion restates deleted-from sessions with the
         // same banding, so one function owns it.
-        sleepStageScore(deepMin, totalMin)
+        sleepStageScore(deepMin, totalMin, stagesUnmeasured)
 
     // ── Calorie estimation recompute (iOS #98) ───────────────────────────────────
 

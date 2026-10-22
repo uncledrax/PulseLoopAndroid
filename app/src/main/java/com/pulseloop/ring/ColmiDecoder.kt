@@ -324,8 +324,11 @@ object ColmiDecoder {
 
     // MARK: Big-data (V2)
 
+    /** [sleepStagesUnmeasured]: the ring runs firmware that sends no light/deep/REM split
+     *  ([ColmiFirmware.reportsUnmeasuredSleepStages]); its sleep decodes as [SleepStage.UNKNOWN]. */
     fun decodeBigData(
-        data: ByteArray, now: Instant = Instant.now(), zone: ZoneId = ZoneId.systemDefault()
+        data: ByteArray, now: Instant = Instant.now(), zone: ZoneId = ZoneId.systemDefault(),
+        sleepStagesUnmeasured: Boolean = false,
     ): List<RingDecodedEvent> {
         val v = data.map { it.toUByte() }
         if (v.size < 6 || v[0] != ColmiCommandID.BIG_DATA_V2) {
@@ -333,12 +336,12 @@ object ColmiDecoder {
         }
         return when (v[1]) {
             ColmiCommandID.BIG_DATA_SPO2 -> decodeSpo2(data, zone)
-            ColmiCommandID.BIG_DATA_SLEEP -> decodeSleep(data, zone)
+            ColmiCommandID.BIG_DATA_SLEEP -> decodeSleep(data, zone, sleepStagesUnmeasured)
             // Nap/lunch sleep (action 62): emitted spontaneously alongside the action-39 reply on
             // rings with nap support. Same day-record layout as action 39 (QRing's
             // parseDaySleepLunch reads the identical [daysAgo][len][start u16][end u16][pairs…]
             // structure), so the regular sleep decoder handles it.
-            ColmiCommandID.BIG_DATA_SLEEP_LUNCH -> decodeSleep(data, zone)
+            ColmiCommandID.BIG_DATA_SLEEP_LUNCH -> decodeSleep(data, zone, sleepStagesUnmeasured)
             ColmiCommandID.BIG_DATA_TEMPERATURE -> decodeTemperature(data, zone)
             // Blood sugar (0x47): Colmi rings don't support it and nothing requests it; the old
             // parser here was a wrong-format guess (QRing uses SpO2-style 49-byte blocks), so a
@@ -442,7 +445,7 @@ object ColmiDecoder {
         return events
     }
 
-    private fun decodeSleep(data: ByteArray, zone: ZoneId): List<RingDecodedEvent> {
+    private fun decodeSleep(data: ByteArray, zone: ZoneId, stagesUnmeasured: Boolean): List<RingDecodedEvent> {
         val v = data.map { it.toUByte() }
         val packetLength = ColmiBytes.u16(v[2], v[3])
         if (packetLength < 2 || v.size <= 7) return emptyList()
@@ -467,10 +470,15 @@ object ColmiDecoder {
                 val minutes = v[index + 1].toInt()
                 index += 2; j += 2
                 if (minutes <= 0) continue
-                val stage = sleepStage(stageType)
+                val stage = sleepStage(stageType, stagesUnmeasured)
                 repeat(minutes) { stages.add(stage) }
             }
-            if (stages.isNotEmpty()) {
+            if (stages.isEmpty()) continue
+            // A night's segments always add up to its start→end span on firmware we've seen (the
+            // captured Ring 2 Pro night; RY02KA in emulation). A mismatch means a corrupt record —
+            // RY02KA overruns its 40-segment arrays on restless nights and then sends leftover memory
+            // as stages — so the night is dropped rather than stored.
+            if (segmentsMatchSpan(stages.size, sleepStart, sleepEnd)) {
                 events.add(RingDecodedEvent.SleepTimeline(
                     _timestamp = sessionStart.toInstant(), stages = stages
                 ))
@@ -479,12 +487,32 @@ object ColmiDecoder {
         return events
     }
 
-    fun sleepStage(type: UByte): SleepStage = when (type) {
-        ColmiCommandID.SLEEP_LIGHT -> SleepStage.LIGHT
-        ColmiCommandID.SLEEP_DEEP -> SleepStage.DEEP
-        ColmiCommandID.SLEEP_REM -> SleepStage.REM
-        ColmiCommandID.SLEEP_AWAKE -> SleepStage.AWAKE
-        else -> SleepStage.UNKNOWN
+    /**
+     * [stagesUnmeasured]: codes 2/3/4 all mean "asleep, stage not measured" ([SleepStage.UNKNOWN]).
+     * Code 0 is the gap the ring writes between two sleep periods it joined into one night — never
+     * sleep, so AWAKE; as UNKNOWN it was counted as asleep and drawn nowhere.
+     */
+    fun sleepStage(type: UByte, stagesUnmeasured: Boolean = false): SleepStage {
+        if (stagesUnmeasured && (type == ColmiCommandID.SLEEP_LIGHT || type == ColmiCommandID.SLEEP_DEEP ||
+                type == ColmiCommandID.SLEEP_REM)) return SleepStage.UNKNOWN
+        return when (type) {
+            ColmiCommandID.SLEEP_GAP -> SleepStage.AWAKE
+            ColmiCommandID.SLEEP_LIGHT -> SleepStage.LIGHT
+            ColmiCommandID.SLEEP_DEEP -> SleepStage.DEEP
+            ColmiCommandID.SLEEP_REM -> SleepStage.REM
+            ColmiCommandID.SLEEP_AWAKE -> SleepStage.AWAKE
+            else -> SleepStage.UNKNOWN
+        }
+    }
+
+    /** Whether a night's segment minutes cover its start→end span (minutes of the day; wraps
+     *  midnight when start > end), with a few minutes' slack for firmware that rounds the ends.
+     *  A start or end outside a day's 0..1439 isn't something the check knows how to read, so
+     *  such a night is kept as before rather than judged. */
+    fun segmentsMatchSpan(minutes: Int, start: Int, end: Int): Boolean {
+        if (start !in 0 until 1440 || end !in 0 until 1440) return true
+        val span = ((end - start) % 1440 + 1440) % 1440
+        return kotlin.math.abs(minutes - span) <= maxOf(5, span / 50)
     }
 
 }

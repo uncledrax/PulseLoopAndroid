@@ -118,6 +118,9 @@ object ColmiCommandID {
     const val BIG_DATA_INTERVAL_TEMPERATURE: UByte = 0x77u
 
     // Sleep stage types
+    /** Fills the time between two sleep periods the ring joined into one night — an awakening of
+     *  10+ minutes (plus its 16-minute re-detection hold-off), or the ring off. Never sleep. */
+    const val SLEEP_GAP: UByte = 0x00u
     const val SLEEP_LIGHT: UByte = 0x02u
     const val SLEEP_DEEP: UByte = 0x03u
     const val SLEEP_REM: UByte = 0x04u
@@ -169,4 +172,22 @@ object ColmiBytes {
         a.toInt() or (b.toInt() shl 8) or (c.toInt() shl 16)
     fun u24be(a: UByte, b: UByte, c: UByte): Int =
         (a.toInt() shl 16) or (b.toInt() shl 8) or c.toInt()
+}
+
+/** Facts about specific Colmi firmware builds, keyed on the Device Information firmware revision. */
+object ColmiFirmware {
+    /**
+     * Patched RY02KA firmware (`RY02KA_<version>_PATCH<n>`, n ≥ 3) sends sleep code 2 for every
+     * sleeping minute instead of the stock firmware's light / deep / REM split, which the stock
+     * firmware chooses with `rand()` — the ring only measures sleep onset, waking, and awake spells
+     * of 2+ minutes. On that firmware codes 2/3/4 mean "asleep, stage not measured".
+     */
+    fun reportsUnmeasuredSleepStages(firmwareRevision: String): Boolean {
+        val revision = firmwareRevision.trim()
+        if (!revision.startsWith("RY02KA_")) return false
+        val at = revision.lastIndexOf("_PATCH")
+        if (at < 0) return false
+        val patch = revision.substring(at + "_PATCH".length).toIntOrNull() ?: return false
+        return patch >= 3
+    }
 }
