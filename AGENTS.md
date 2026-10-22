@@ -771,6 +771,22 @@ Found by emulating the RY02KA_3.00.31 firmware's own code, stock and patched. Fo
   stage averages, and stores no deep-band score. Health Connect gets `UNKNOWN` as
   `STAGE_TYPE_SLEEPING`.
 
+## A Colmi engine stops with its link
+
+`RingBLEClient` builds a fresh driver (and engine) for every connection, never destroys the old
+one, and tells only the driver that the link ended. `ColmiDriver.connectionDidEnd` forwards that to
+`ColmiSyncEngine.connectionDidEnd`, which cancels the stage watchdog, live-HR keepalive and sport
+watchdog and parks the engine at IDLE. Before it did, a drop mid-sync left the old engine's
+coroutines running: the watchdog wrote history requests through the shared writer into the *next*
+connection's queue and finally published `SyncProgress("done")`, stamping `lastFullSyncAt` for a sync
+that never happened. Two related rules in the engine:
+
+- A paged frame is decoded only if its opcode is the last paged request's (`pagedOpcodeInFlight`), so a
+  straggler from a stage the watchdog skipped can't be dated by the wrong day; only a frame for the
+  current stage advances the machine.
+- A run the ring answered nothing in ends `SyncProgress("incomplete")`: the progress bar clears, but
+  nothing stamps `lastFullSyncAt` or wakes the coach.
+
 ## Deleting a reading needs a tombstone, not just a DELETE (issue #60)
 
 History measurements are keyed `history:<kind>:<timestamp>` and written with `upsert`, on purpose:

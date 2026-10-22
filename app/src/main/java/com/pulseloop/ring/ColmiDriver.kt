@@ -44,6 +44,16 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
     // Only a match sets it, so whichever of 2A26 / 2A28 arrives second can't clear it.
     override fun connectionDidStart() {
         sleepStagesUnmeasured = false
+        bigDataBuffer = null
+        intervalTempSampleOffset = 0
+        engine.connectionDidStart()
+    }
+
+    /** The client calls only the driver; the engine's timers must stop with the link (see
+     *  [ColmiSyncEngine.connectionDidEnd]), and a big-data reply the link cut off never completes. */
+    override fun connectionDidEnd() {
+        bigDataBuffer = null
+        engine.connectionDidEnd()
     }
 
     override fun firmwareRevisionDidUpdate(revision: String) {
