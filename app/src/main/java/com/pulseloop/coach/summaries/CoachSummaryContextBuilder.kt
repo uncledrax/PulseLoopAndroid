@@ -95,39 +95,13 @@ object CoachSummaryContextBuilder {
         val score = SleepScore.calculate(session, blocks)
         val activitySteps = db.activityDailyDao().byDay(todayStart)?.steps
 
-        @Serializable
-        data class SleepDayPacket(
-            val date: String,
-            val totalMin: Int,
-            val deepMin: Int,
-            val lightMin: Int,
-            val awakeMin: Int,
-            val score: Int,
-            val scoreLabel: String,
-            val awakePct: Int?,
-            val deepPct: Int,
-            val activitySteps: Int?,
-        )
-        // stageRaw is persisted as the SleepStage enum NAME, which is uppercase. These three
-        // matched lowercase literals and were therefore always zero, so every sleep summary the
-        // coach has ever been given said the user had no deep, light or awake sleep at all.
-        val deepMin = blocks.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
-        val lightMin = blocks.filter { it.stageRaw == SleepStage.LIGHT.name }.sumOf { it.durationMinutes }
-        val awakeMin = blocks.filter { it.stageRaw == SleepStage.AWAKE.name }.sumOf { it.durationMinutes }
-
-        val p = SleepDayPacket(
-            date = session.date.toString(),
-            totalMin = session.totalMinutes,
-            deepMin = deepMin, lightMin = lightMin, awakeMin = awakeMin,
-            score = score.score, scoreLabel = score.label.name.lowercase(),
-            awakePct = score.awakePct, deepPct = score.deepPct,
-            activitySteps = activitySteps,
-        )
+        val staged = !stagesUnmeasured(blocks)
+        val p = sleepDayPacket(session, blocks, score, activitySteps)
         val contextJson = json.encodeToString(p)
 
         val sig = signature(listOf(
-            session.totalMinutes.toString(), deepMin.toString(),
-            lightMin.toString(), awakeMin.toString(), score.score.toString(),
+            session.totalMinutes.toString(), p.deepMin.toString(),
+            p.lightMin.toString(), p.awakeMin.toString(), score.score.toString(), staged.toString(),
         ))
 
         val coach = SleepInsights.dayCoach(session, blocks, activitySteps)
@@ -142,6 +116,52 @@ object CoachSummaryContextBuilder {
             sleepSessionEnd = session.endAt,
         )
     }
+
+    /**
+     * What the coach is told about one night. A night recorded as asleep / awake only (patched RY02KA
+     * firmware) has no light / deep split: its stage fields are null rather than 0 minutes of deep
+     * sleep, `asleepMin` carries the time asleep, and `stagesMeasured: false` says why.
+     */
+    @Serializable
+    internal data class SleepDayPacket(
+        val date: String,
+        val totalMin: Int,
+        val deepMin: Int?,
+        val lightMin: Int?,
+        val asleepMin: Int?,
+        val awakeMin: Int,
+        val stagesMeasured: Boolean,
+        val score: Int,
+        val scoreLabel: String,
+        val awakePct: Int?,
+        val deepPct: Int?,
+        val activitySteps: Int?,
+    )
+
+    internal fun sleepDayPacket(
+        session: SleepSessionEntity, blocks: List<SleepStageBlockEntity>,
+        score: SleepScoreResult = SleepScore.calculate(session, blocks), activitySteps: Int? = null,
+    ): SleepDayPacket {
+        // stageRaw is persisted as the SleepStage enum NAME, which is uppercase. These three
+        // matched lowercase literals and were therefore always zero, so every sleep summary the
+        // coach has ever been given said the user had no deep, light or awake sleep at all.
+        val deepMin = blocks.filter { it.stageRaw == SleepStage.DEEP.name }.sumOf { it.durationMinutes }
+        val lightMin = blocks.filter { it.stageRaw == SleepStage.LIGHT.name }.sumOf { it.durationMinutes }
+        val awakeMin = blocks.filter { it.stageRaw == SleepStage.AWAKE.name }.sumOf { it.durationMinutes }
+        val staged = !stagesUnmeasured(blocks)
+        return SleepDayPacket(
+            date = session.date.toString(),
+            totalMin = session.totalMinutes,
+            deepMin = deepMin.takeIf { staged }, lightMin = lightMin.takeIf { staged },
+            asleepMin = if (staged) null else unstagedMinutes(blocks),
+            awakeMin = awakeMin, stagesMeasured = staged,
+            score = score.score, scoreLabel = score.label.name.lowercase(),
+            awakePct = score.awakePct, deepPct = score.deepPct.takeIf { staged },
+            activitySteps = activitySteps,
+        )
+    }
+
+    internal fun encodePacket(packet: SleepDayPacket): String = json.encodeToString(packet)
 
     // ── Helpers ──────────────────────────────────────────────────────────
 

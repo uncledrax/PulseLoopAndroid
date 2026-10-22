@@ -1,5 +1,6 @@
 package com.pulseloop.service
 
+import com.pulseloop.coach.summaries.CoachSummaryContextBuilder
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.ring.SleepStage
@@ -60,6 +61,29 @@ class UnstagedSleepTest {
         val text = (coach.headline + coach.body + coach.chips.joinToString()).lowercase()
         assertFalse(text, text.contains("deep"))
         assertTrue(coach.chips.contains("Stages not measured"))
+    }
+
+    @Test
+    fun `the coach is told what was measured, not zero deep sleep`() {
+        val s = session(asleepMin = 460, spanMin = 480)
+        val p = CoachSummaryContextBuilder.sleepDayPacket(
+            s, blocks(s.id, SleepStage.UNKNOWN to 300, SleepStage.AWAKE to 20, SleepStage.UNKNOWN to 160))
+        assertNull(p.deepMin); assertNull(p.lightMin); assertNull(p.deepPct)
+        assertEquals(460, p.asleepMin)
+        assertFalse(p.stagesMeasured)
+        val json = CoachSummaryContextBuilder.encodePacket(p)
+        assertTrue(json, json.contains("\"stagesMeasured\":false"))
+        assertTrue(json, json.contains("\"asleepMin\":460"))
+    }
+
+    @Test
+    fun `a staged night keeps its stages in the coach context`() {
+        val s = session(asleepMin = 390, spanMin = 420)
+        val p = CoachSummaryContextBuilder.sleepDayPacket(
+            s, blocks(s.id, SleepStage.LIGHT to 300, SleepStage.DEEP to 90, SleepStage.AWAKE to 30))
+        assertEquals(90, p.deepMin); assertEquals(300, p.lightMin)
+        assertNull(p.asleepMin)
+        assertTrue(p.stagesMeasured)
     }
 
     @Test
