@@ -771,6 +771,42 @@ Found by emulating the RY02KA_3.00.31 firmware's own code, stock and patched. Fo
   stage averages, and stores no deep-band score. Health Connect gets `UNKNOWN` as
   `STAGE_TYPE_SLEEPING`.
 
+More rules for this ring, read from its firmware's disassembly (stock `RY02KA_3.00.31_250603`;
+`ColmiFirmware.isRy02ka` is any revision starting `RY02KA_`, patched builds included):
+
+- **No temperature sensor.** Its `0x3A` handler builds a reply and never sends it, and the
+  temperature big-data request returns nothing. `WearableModel.KOGAN_AURA.removedCapabilities` takes
+  `TEMPERATURE` out (the first model to remove rather than add; same name-identified gate as
+  `extraCapabilities`, applied by `RingBLEClient.withModelCapabilities` to the live set and to the
+  `DeviceIdentified` that persists it). The engine skips the temperature stage and pref writes.
+- **The handshake must not wait for the temperature pref.** It waited for both the HR and temp pref
+  replies before seeding the config, so a fresh install on this ring never seeded at all.
+  `finishSeedingIfComplete` completes on the HR reply alone once the DIS revision says RY02KA, in
+  whichever order the two arrive.
+- **Stress is a formula of heart rate**: HR/4 + 2·HR − the session's highest and lowest HR + an
+  extra term above 75 bpm, folded into 20–69. No HRV. Per issue #67 it is labelled where shown
+  (`WearableCapability.STRESS_FROM_HEART_RATE` → `VitalsState.stressFromHeartRate` /
+  `DetailState.stressFromHeartRate`). The Today tile still carries no label, as for derived stress.
+- **Its real-time timer ticks every 500 ms.** A `0x69 01` spot measurement reports only on ticks
+  51–59 (25–30 s in) and then stops itself, so the spot HR ceiling is 35 s here
+  (`ColmiFirmware.RY02KA_SPOT_HEART_RATE_SECONDS`), and the `0x1E`→`0x69 01` live-HR fallback gave
+  ~10 readings a minute in one burst. Live HR uses `0x69 06 01` instead, which streams about once a
+  second after ~10 s; a stream that produces nothing in 30 s falls back to the `0x69 01` chain. Its
+  `0x6A 06` stop is never acknowledged (the firmware acks only a run 25 s into its spot clock).
+  `0x69 06` is read from the code, not yet captured from a ring.
+- **Never send `A1 01` or `A1 06`.** On this firmware the factory raw-sensor command first erases
+  every history store and resets the settings record (`0x825D06` → `0x827192`, `0x8300A0`,
+  `0x82D65A`). Nothing in the app sends `0xA1`; keep it that way.
+- **Values are shaped inside the firmware's algorithm libraries, in stock and in PATCH1–4 alike**
+  (the patches remove the app-layer random fills, not these): resting HR above 95 at first lock is
+  folded to 90 + HR mod 10; during movement HR may not fall and is pushed up 1 bpm/s below 100;
+  HRV substitutes the expected beat interval for outliers, clamps beat-to-beat differences to
+  8–108 ms and folds values above 80 into 80–89; SpO₂ is mapped through a table that floors it at
+  79 % and a steady 99 % is varied to 97–99 %. Don't build insight logic that treats these as clean.
+- **History synced from stock firmware contains invented values** — failed readings filled with
+  random HR 40–49, SpO₂ 93–99, HRV 27–36 / 30–49, stress 20–54 — indistinguishable from real rows.
+  Rows synced before a user flashed a patch can't be cleaned automatically.
+
 ## A Colmi engine stops with its link
 
 `RingBLEClient` builds a fresh driver (and engine) for every connection, never destroys the old

@@ -80,6 +80,16 @@ object ColmiCommandID {
     // From the colmi_r02_client RealTimeReading enum.
     const val RT_HEART_RATE: UByte = 0x01u
     const val RT_SPO2: UByte = 0x03u
+    /**
+     * Continuous real-time heart rate (`0x69 06 01` start, `0x6A 06` stop; colmi_r02_client's
+     * `REAL_TIME_HEART_RATE`). Where `0x69 01` is a one-shot spot measurement that reports only near
+     * its end, this streams a reading about once a second after a short warm-up until stopped.
+     * Used for live heart rate on RY02KA firmware only ([ColmiFirmware.isRy02ka]); unverified on
+     * other Colmi firmware, so nothing else sends it.
+     */
+    const val RT_HEART_RATE_CONTINUOUS: UByte = 0x06u
+    /** Start action for [RT_HEART_RATE_CONTINUOUS] (payload byte 2). */
+    const val RT_CONTINUOUS_START: UByte = 0x01u
     // On-demand HRV / stress / temperature (QRing `StartHeartRateReq.TYPE_PRESSURE` = 8,
     // `TYPE_HRV` = 10, `TYPE_BODY_TEMPERATURE` = 11), confirmed on a Ring 2 Pro capture.
     const val RT_STRESS: UByte = 0x08u
@@ -176,6 +186,24 @@ object ColmiBytes {
 
 /** Facts about specific Colmi firmware builds, keyed on the Device Information firmware revision. */
 object ColmiFirmware {
+    /**
+     * RY02KA hardware (Colmi R02 variant sold as the Kogan Aura), stock or patched firmware. Its
+     * firmware revision (DIS `2A26`) starts `RY02KA_` on every build seen: `RY02KA_3.00.31_250603`
+     * stock, `RY02KA_3.00.31_PATCH<n>` patched. Read from the firmware's own code:
+     * - **No temperature sensor.** It never answers the `0x3A` temperature-pref read (its handler
+     *   builds a reply and never sends it), and the temperature big-data request returns nothing.
+     * - **Stress is computed from heart rate**, not measured: HR/4 + 2·HR − the session's highest and
+     *   lowest HR + an extra term above 75 bpm, folded into 20–69. No HRV goes into it.
+     * - **A `0x69 01` spot measurement reports only 25–30 s after its start** (its timer ticks every
+     *   500 ms and it sends results on ticks 51–59), then stops by itself.
+     * - **`0x69 06` streams live heart rate** about once a second after a ~10 s warm-up.
+     */
+    fun isRy02ka(firmwareRevision: String): Boolean = firmwareRevision.trim().startsWith("RY02KA_")
+
+    /** Spot heart-rate ceiling for RY02KA: its readings arrive 25–30 s in, so the default 30 s
+     *  ceiling caught them only if the start went out with no delay at all. */
+    const val RY02KA_SPOT_HEART_RATE_SECONDS = 35
+
     /** `n` of patched RY02KA firmware (`RY02KA_<version>_PATCH<n>`); null for stock firmware or any other ring. */
     fun ry02kaPatchLevel(firmwareRevision: String): Int? {
         val revision = firmwareRevision.trim()

@@ -46,7 +46,12 @@ enum class WearableCapability(val key: String) {
 
     // On-demand stress and temperature (QRing's manual measure screens; Colmi `0x69` types 8/11).
     MANUAL_STRESS("manualStress"),
-    MANUAL_TEMPERATURE("manualTemperature");
+    MANUAL_TEMPERATURE("manualTemperature"),
+
+    // Not a feature but a fact about one: the ring's stress figure is calculated from heart rate
+    // alone, not measured (RY02KA; see ColmiFirmware.isRy02ka). Every surface showing that ring's
+    // stress says so, as issue #67 requires of any derived metric.
+    STRESS_FROM_HEART_RATE("stressFromHeartRate");
 
     companion object {
         fun fromCsv(csv: String): Set<WearableCapability> =

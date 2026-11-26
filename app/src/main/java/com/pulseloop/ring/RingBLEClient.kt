@@ -1050,11 +1050,27 @@ class RingBLEClient(
      * was never shown to support, each running its 75 s ceiling before failing.
      */
     private fun setActiveModel(modelID: String?) {
-        val extras = modelExtraCapabilities(modelID)
-        updateState { copy(activeWearableModelID = modelID, activeCapabilities = activeCapabilities + extras) }
+        updateState {
+            copy(activeWearableModelID = modelID, activeCapabilities = withModelCapabilities(activeCapabilities, modelID))
+        }
     }
 
-    private fun modelExtraCapabilities(modelID: String?): Set<WearableCapability> =
+    /**
+     * [base] with [modelID]'s per-model adjustments, under the name-identified gate: its
+     * [com.pulseloop.wearables.WearableModel.extraCapabilities] added and its
+     * [com.pulseloop.wearables.WearableModel.removedCapabilities] taken out (the Kogan Aura's
+     * temperature). Idempotent, so the repeated resolutions during a connect agree, and
+     * [installDriver] restores the family baseline on a re-route. Used for the live set and for the
+     * [PulseEvent.DeviceIdentified] that persists it, which must not disagree.
+     */
+    private fun withModelCapabilities(base: Set<WearableCapability>, modelID: String?): Set<WearableCapability> {
+        val model = nameIdentifiedModel(modelID) ?: return base
+        return base - model.removedCapabilities + model.extraCapabilities
+    }
+
+    /** [modelID]'s catalog entry when it belongs to the installed family and the ring's own
+     *  advertised name identifies it; null otherwise (see [setActiveModel]). */
+    private fun nameIdentifiedModel(modelID: String?): com.pulseloop.wearables.WearableModel? =
         com.pulseloop.wearables.WearableModel.model(modelID)
             ?.takeIf { it.family == activeCoordinator?.deviceType }
             ?.takeIf {
@@ -1062,7 +1078,6 @@ class RingBLEClient(
                     activeAdvertisedName ?: connectingName,
                 )?.id == it.id
             }
-            ?.extraCapabilities.orEmpty()
 
     /** True only when the connected model is one we deliberately OS-bond (currently the R09 and
      *  the R11/Yawell R11). See [com.pulseloop.wearables.WearableModel.requiresOsBond]. */
@@ -2048,7 +2063,7 @@ class RingBLEClient(
                         deviceType = coord.deviceType,
                         wearableModelID = modelID,
                         advertisedName = activeAdvertisedName ?: connectingName,
-                        capabilities = coord.capabilities + modelExtraCapabilities(modelID),
+                        capabilities = withModelCapabilities(coord.capabilities, modelID),
                     )
                 )
             }

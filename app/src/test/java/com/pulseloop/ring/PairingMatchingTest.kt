@@ -65,7 +65,10 @@ class PairingMatchingTest {
             WearableCapability.MANUAL_TEMPERATURE,
         )
         assertEquals(streamed, WearableModel.COLMI_RING_2_PRO.extraCapabilities)
-        for (model in WearableModel.CATALOG - WearableModel.COLMI_RING_2_PRO) {
+        // The Kogan Aura's one extra is a label, not a feature: its stress is computed from heart
+        // rate (read from the RY02KA firmware), and every surface showing it must say so.
+        assertEquals(setOf(WearableCapability.STRESS_FROM_HEART_RATE), WearableModel.KOGAN_AURA.extraCapabilities)
+        for (model in WearableModel.CATALOG - WearableModel.COLMI_RING_2_PRO - WearableModel.KOGAN_AURA) {
             assertTrue("${model.id} has unvalidated extras", model.extraCapabilities.isEmpty())
         }
     }

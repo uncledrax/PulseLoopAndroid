@@ -175,6 +175,143 @@ class ColmiRy02kaFirmwareTest {
         assertNull(WearableModel.modelForAdvertisedName("Kogan Aura 2"))
     }
 
+    @Test
+    fun `Kogan Aura drops temperature and labels its stress as heart-rate derived`() {
+        val model = WearableModel.modelForAdvertisedName("Kogan Aura")!!
+        assertTrue(WearableCapability.TEMPERATURE in model.removedCapabilities)
+        assertTrue(WearableCapability.MANUAL_TEMPERATURE in model.removedCapabilities)
+        assertTrue(WearableCapability.STRESS_FROM_HEART_RATE in model.extraCapabilities)
+        // Its family keeps both: the change is this model's, not the Colmi baseline's.
+        assertTrue(WearableCapability.TEMPERATURE in ColmiCoordinator.capabilities)
+        assertFalse(WearableCapability.STRESS_FROM_HEART_RATE in ColmiCoordinator.capabilities)
+    }
+
+    // MARK: RY02KA firmware facts in the engine
+
+    private val stockRevision = "RY02KA_3.00.31_250603"
+
+    /** `[0x16, READ, on, interval]`, the auto-HR pref read reply. */
+    private fun hrPrefReply(intervalMinutes: Int) = page(0x16, 0x01, 0x01, intervalMinutes)
+
+    @Test
+    fun `RY02KA detection covers stock and patched builds only`() {
+        assertTrue(ColmiFirmware.isRy02ka("RY02KA_3.00.31_250603"))
+        assertTrue(ColmiFirmware.isRy02ka("RY02KA_3.00.31_PATCH4\n"))
+        assertFalse(ColmiFirmware.isRy02ka("RT02R_3.11.00"))
+        assertFalse(ColmiFirmware.isRy02ka("RY10H_1.0.0"))
+    }
+
+    @Test
+    fun `a fresh RY02KA handshake seeds the config without a temperature reply`() {
+        for (disFirst in listOf(true, false)) {
+            val engine = ColmiSyncEngine(RecordingWriter(), ColmiDecoder)
+            var seeded: MeasurementSettings? = null
+            engine.setOnMeasurementConfigSeeded { seeded = it }
+            engine.runStartup()
+            if (disFirst) engine.firmwareRevisionDidUpdate(stockRevision)
+            engine.handleRawNotify(hrPrefReply(10))
+            if (!disFirst) engine.firmwareRevisionDidUpdate(stockRevision)
+            assertEquals("seeded (DIS first = $disFirst)", 10, seeded?.hrIntervalMinutes)
+            assertEquals(false, seeded?.temperatureEnabled)
+            engine.connectionDidEnd()
+        }
+    }
+
+    @Test
+    fun `other firmware still waits for the temperature pref`() {
+        val engine = ColmiSyncEngine(RecordingWriter(), ColmiDecoder)
+        var seeded: MeasurementSettings? = null
+        engine.setOnMeasurementConfigSeeded { seeded = it }
+        engine.runStartup()
+        engine.firmwareRevisionDidUpdate("RY10H_1.0.0")
+        engine.handleRawNotify(hrPrefReply(10))
+        assertNull(seeded)
+        engine.handleRawNotify(page(0x3A, 0x03, 0x01, 0x01))
+        assertEquals(true, seeded?.temperatureEnabled)
+        engine.connectionDidEnd()
+    }
+
+    @Test
+    fun `RY02KA settings writes leave out the temperature pref`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.firmwareRevisionDidUpdate(stockRevision)
+        engine.applyMeasurementSettings(MeasurementSettings(
+            hrEnabled = true, hrIntervalMinutes = 5, spo2Enabled = true,
+            stressEnabled = true, hrvEnabled = true, temperatureEnabled = true,
+        ))
+        assertTrue(writer.commands.isNotEmpty())
+        assertTrue(writer.commands.none { it[0].toUByte() == ColmiCommandID.AUTO_TEMP_PREF })
+    }
+
+    @Test
+    fun `spot heart rate gets a longer ceiling on RY02KA only`() {
+        val driver = ColmiDriver { }
+        val engine = driver.makeSyncEngine()
+        driver.connectionDidStart()
+        assertEquals(RingSyncEngine.DEFAULT_SPOT_HEART_RATE_SECONDS, engine.spotHeartRateSeconds)
+        driver.firmwareRevisionDidUpdate(stockRevision)
+        assertEquals(ColmiFirmware.RY02KA_SPOT_HEART_RATE_SECONDS, engine.spotHeartRateSeconds)
+        driver.connectionDidStart()   // reconnect: unknown until this link's DIS read
+        assertEquals(RingSyncEngine.DEFAULT_SPOT_HEART_RATE_SECONDS, engine.spotHeartRateSeconds)
+    }
+
+    private fun isCommand(c: ByteArray, vararg prefix: Int) =
+        c.size >= prefix.size && prefix.indices.all { (c[it].toInt() and 0xFF) == prefix[it] }
+
+    @Test
+    fun `RY02KA live heart rate runs on the continuous stream and stops without awaiting an ack`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.firmwareRevisionDidUpdate(stockRevision)
+        engine.startHeartRate()
+        assertTrue(isCommand(writer.commands.last(), 0x69, 0x06, 0x01))
+        assertTrue("no 0x1E probe", writer.commands.none { isCommand(it, 0x1E) })
+        engine.stopHeartRate()
+        assertTrue(isCommand(writer.commands.last(), 0x6A, 0x06))
+        assertFalse(engine.stopAwaitsAck(MeasurementKind.HEART_RATE))
+        engine.connectionDidEnd()
+    }
+
+    @Test
+    fun `a continuous stream that answered is re-armed after silence`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.firmwareRevisionDidUpdate(stockRevision)
+        engine.startHeartRate()
+        engine.handleRawNotify(page(0x69, 0x06, 0x00, 72))
+        val before = writer.commands.size
+        engine.continuousKeepaliveTick(System.currentTimeMillis() + 31_000)
+        val sent = writer.commands.drop(before)
+        assertEquals(1, sent.size)
+        assertTrue(isCommand(sent.single(), 0x69, 0x06, 0x01))
+        engine.connectionDidEnd()
+    }
+
+    @Test
+    fun `a continuous stream that never answered falls back to the spot chain`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.firmwareRevisionDidUpdate(stockRevision)
+        engine.startHeartRate()
+        val before = writer.commands.size
+        engine.continuousKeepaliveTick(System.currentTimeMillis() + 31_000)
+        val sent = writer.commands.drop(before)
+        assertTrue(isCommand(sent.first(), 0x6A, 0x06))
+        assertTrue(isCommand(sent.last(), 0x69, 0x01))
+        engine.connectionDidEnd()
+    }
+
+    @Test
+    fun `other Colmi firmware keeps the 0x1E probe`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.firmwareRevisionDidUpdate("RY10H_1.0.0")
+        engine.startHeartRate()
+        assertTrue(isCommand(writer.commands.last(), 0x1E, 0x01))
+        engine.connectionDidEnd()
+    }
+
     @Suppress("unused")
     private val clockAnchor = Instant.EPOCH
 }
