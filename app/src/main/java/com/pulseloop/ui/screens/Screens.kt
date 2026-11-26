@@ -230,6 +230,9 @@ fun VitalsScreen(
                 emptyText = "No stress data yet — take a measurement.",
                 // Issue #67: say so on the card itself. A derived figure presented as a measurement
                 // would be worse than the empty card it replaces.
+                // A ring that calculates stress from heart rate (RY02KA, state.stressFromHeartRate) is
+                // not labelled through this footnote: its card is flagged estimated, which shows the
+                // ESTIMATED chip in the header and hides the single-line header footer this would use.
                 footnote = if (state.stressIsDerived) "Estimated from HRV — your ring doesn't measure stress" else null,
                 onTap = { navController?.navigate("vitals/stress") },
             )
@@ -884,7 +887,7 @@ fun VitalDetailScreen(
                 // 7. Estimated-metric disclaimer (BP + glucose, iOS warning card; plus derived
                 // stress, issue #67 — the card that opened this chart labels its number, and this
                 // chart shows the same number, so it says the same thing here).
-                metricDisclaimer(metric, state.isDerived)?.let { disclaimer ->
+                metricDisclaimer(metric, state.isDerived, state.stressFromHeartRate)?.let { disclaimer ->
                     item {
                         val cardShape = RoundedCornerShape(20.dp)
                         Row(
@@ -1176,12 +1179,17 @@ private const val ESTIMATED_SPO2_NOTE =
  * stress at all. It gets the card for the same reason BP and glucose do — the number on screen is
  * an inference, and the user is entitled to know that without leaving the chart. For SpO₂ it is
  * issue #103: hourly readings this ring computes from heart rate rather than measures.
+ * [stressFromHeartRate] is a ring that sends stress but calculates it from heart rate (RY02KA).
  */
-private fun metricDisclaimer(metric: String, isDerived: Boolean): String? = when {
+private fun metricDisclaimer(metric: String, isDerived: Boolean, stressFromHeartRate: Boolean = false): String? = when {
     metric == "stress" && isDerived ->
         "Estimated from HRV — your ring doesn't measure stress. Scored against your own recent " +
         "HRV readings, so it says how this reading compares with your normal, not how you compare " +
         "with anyone else."
+    metric == "stress" && stressFromHeartRate ->
+        "Calculated by your ring from heart rate — not a stress measurement. The ring works it out " +
+        "from your heart rate and its highs and lows during the reading, without heart-rate " +
+        "variability, so it rises with any raised heart rate, exercise included."
     metric == "spo2" && isDerived ->
         "$ESTIMATED_SPO2_NOTE On this ring the same heart rate always comes with the same hourly " +
         "SpO₂, so a night-time dip here follows a low sleeping heart rate rather than measuring oxygen."

@@ -624,6 +624,10 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val stressSamples: List<Double> = emptyList(),
         /** The stress series came from HRV, not from the ring (issue #67). Never shown unlabelled. */
         val stressIsDerived: Boolean = false,
+        /** The ring sent this stress, but calculated it from heart rate rather than measuring it
+         *  (RY02KA, [com.pulseloop.ring.WearableCapability.STRESS_FROM_HEART_RATE]). Never shown
+         *  unlabelled, for the same reason as [stressIsDerived]. */
+        val stressFromHeartRate: Boolean = false,
         val fatigueSamples: List<Double> = emptyList(),
         val tempSamples: List<Double> = emptyList(),
         val latestHr: Int? = null,
@@ -781,6 +785,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             hrvSamples = hrv.map { it.value },
             stressSamples = stress.map { it.value }.ifEmpty { derivedStress },
             stressIsDerived = stress.isEmpty() && derivedStress.isNotEmpty(),
+            stressFromHeartRate = stress.isNotEmpty() &&
+                caps.contains(com.pulseloop.ring.WearableCapability.STRESS_FROM_HEART_RATE),
             fatigueSamples = fatigue.map { it.value },
             tempSamples = temp.map { it.value },
             latestHr = hr.lastOrNull()?.value?.toInt(),
@@ -875,6 +881,7 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
         latestHr = latestHr?.toDouble(),
         latestSpo2 = latestSpo2?.toDouble(),
         spo2Estimated = spo2IsEstimated,
+        stressFromHeartRate = stressFromHeartRate,
         restingHr = restingHr,
         peakHr = peakHr,
         unitSystem = units,
@@ -1134,6 +1141,9 @@ class VitalDetailViewModel(
          *  A derived figure shown as a measurement would be worse than the empty chart it replaces,
          *  which is why it travels with the data instead of being re-inferred at the display layer. */
         val isDerived: Boolean = false,
+        /** A stress chart of readings the ring calculated from heart rate (RY02KA). Labelled for the
+         *  same reason as [isDerived], with its own wording: the ring did send these. */
+        val stressFromHeartRate: Boolean = false,
     )
 
     /**
@@ -1342,6 +1352,11 @@ class VitalDetailViewModel(
             // chart carries the same disclaimer. Only hourly rows count; spot readings never do.
             val estimatedSpo2 = if (kind == MeasurementKind.SPO2 && samples.isNotEmpty())
                 EstimatedSpo2.estimatedTimestamps(dao, windowStart, windowEnd) else emptySet()
+            // The Vitals card labels a RY02KA ring's stress as calculated from heart rate; the chart
+            // it opens shows the same readings, so it says the same thing.
+            val stressFromHeartRate = kind == MeasurementKind.STRESS && samples.isNotEmpty() &&
+                db.deviceDao().current()?.capabilities
+                    ?.contains(com.pulseloop.ring.WearableCapability.STRESS_FROM_HEART_RATE) == true
             val times = if (derived.isNotEmpty()) derived.map { it.timestampMs } else samples.map { it.timestamp }
             val points = if (derived.isNotEmpty()) derived.map { it.value } else samples.map { convert(it.value) }
             val labels = buildLabels(times, period)
@@ -1399,6 +1414,7 @@ class VitalDetailViewModel(
                 trend = trend,
                 engineZones = engineZones,
                 isDerived = derived.isNotEmpty() || samples.any { it.timestamp in estimatedSpo2 },
+                stressFromHeartRate = stressFromHeartRate,
                 loading = false,
             ) }
         }

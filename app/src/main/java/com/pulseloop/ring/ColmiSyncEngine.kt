@@ -123,6 +123,21 @@ class ColmiSyncEngine(
      *  keepalive re-issues the start only when the ring has actually gone quiet. */
     @Volatile private var lastFallbackFrameAt = 0L
 
+    /**
+     * This connection's ring runs RY02KA firmware ([ColmiFirmware.isRy02ka]), learned from its DIS
+     * firmware revision via [firmwareRevisionDidUpdate]. Cleared when a link comes up, because the
+     * ring may have been reflashed in between. Volatile: set from the GATT read callback.
+     */
+    @Volatile private var isRy02ka = false
+
+    /** Live heart rate is running on the RY02KA continuous stream (`0x69 06`), see [startHeartRate]. */
+    @Volatile private var continuousHRActive = false
+    /** Wall-clock of the last `0x69 06` frame; the stream's keepalive re-arms only after real silence. */
+    @Volatile private var lastContinuousFrameAt = 0L
+    /** This stream has produced at least one `0x69 06` frame. One that never does falls back to the
+     *  `0x69 01` chain, so an untested firmware build costs a workout 30 s, not its whole length. */
+    @Volatile private var continuousFramesSeen = false
+
     /** Last bpm seen while a manual spot measurement runs: QRing reports it in the 0x6A stop
      *  frame so the ring's own measurement log records the reading (0 = cancelled). */
     private var lastManualBpm = 0
@@ -186,8 +201,30 @@ class ColmiSyncEngine(
      */
     fun connectionDidEnd() = stopLinkWork()
 
-    /** See [connectionDidEnd]; also run when a link comes up, in case an engine outlives one. */
-    fun connectionDidStart() = stopLinkWork()
+    /** See [connectionDidEnd]; also run when a link comes up, in case an engine outlives one.
+     *  The firmware facts are per link too: this link's DIS read sets them again. */
+    fun connectionDidStart() {
+        isRy02ka = false
+        stopLinkWork()
+    }
+
+    /**
+     * This link's Device Information firmware revision, forwarded by [ColmiDriver]. Only a match
+     * sets [isRy02ka], so whichever of `2A26` / `2A28` arrives second can't clear it.
+     *
+     * A handshake still waiting on the temperature-pref read finishes here: RY02KA never answers it
+     * (see [finishSeedingIfComplete]), and the DIS read can land before or after the HR-pref reply.
+     */
+    fun firmwareRevisionDidUpdate(revision: String) {
+        if (!ColmiFirmware.isRy02ka(revision)) return
+        isRy02ka = true
+        if (seedingFromRing) finishSeedingIfComplete()
+    }
+
+    /** RY02KA's spot heart rate arrives 25–30 s in; everyone else keeps the default ceiling. */
+    override val spotHeartRateSeconds: Int
+        get() = if (isRy02ka) ColmiFirmware.RY02KA_SPOT_HEART_RATE_SECONDS
+            else RingSyncEngine.DEFAULT_SPOT_HEART_RATE_SECONDS
 
     private fun stopLinkWork() {
         watchdogJob?.cancel(); watchdogJob = null
@@ -196,6 +233,7 @@ class ColmiSyncEngine(
         sportWatchdogJob?.cancel(); sportWatchdogJob = null
         sleepOnlyActive = false
         realtimeHRActive = false
+        continuousHRActive = false
         manualHRActive = false
         manualSpO2Active = false
         sportActive = false
@@ -219,7 +257,9 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_STRESS_PREF))
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_SPO2_PREF))
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_HRV_PREF))
-        writer?.enqueue(encoder.readTempPref())
+        // RY02KA has no temperature sensor and never answers this read. Usually the DIS read hasn't
+        // landed yet and it goes out anyway; it is harmless, and the seeding no longer waits on it.
+        if (!isRy02ka) writer?.enqueue(encoder.readTempPref())
         writer?.enqueue(encoder.readGoals())
         val settings = measurementSettings
         if (settings != null) {
@@ -318,6 +358,13 @@ class ColmiSyncEngine(
         ) {
             lastFallbackFrameAt = System.currentTimeMillis()
         }
+        // Same for the RY02KA continuous stream, which answers on its own reading type.
+        if (frame?.get(0)?.toUByte() == ColmiCommandID.MANUAL_HEART_RATE &&
+            frame[1].toUByte() == ColmiCommandID.RT_HEART_RATE_CONTINUOUS
+        ) {
+            lastContinuousFrameAt = System.currentTimeMillis()
+            continuousFramesSeen = true
+        }
 
         // Device-support reply is independent of config seeding: remember the temperature-path
         // capability and, if the ring wants a bond, ask the client to create one. Return early —
@@ -342,10 +389,21 @@ class ColmiSyncEngine(
         }
     }
 
-    /** Once both prefs reported, adopt the seeded config and surface it for persistence. */
+    /**
+     * Once both prefs reported, adopt the seeded config and surface it for persistence.
+     *
+     * RY02KA never answers the temperature-pref read (its `0x3A` handler builds a reply and never
+     * sends it), so on that firmware the HR pref alone completes the seed, with temperature off.
+     * Waiting for both left a fresh install on this ring with no saved config, connect after connect.
+     *
+     * Synchronized and re-checked: it is now reached from the notify thread (a pref reply) and the
+     * GATT read callback ([firmwareRevisionDidUpdate]), and the seed must be surfaced once.
+     */
+    @Synchronized
     private fun finishSeedingIfComplete() {
+        if (!seedingFromRing) return
         val interval = seededHrIntervalMinutes ?: return
-        val tempEnabled = seededTempEnabled ?: return
+        val tempEnabled = seededTempEnabled ?: (if (isRy02ka) false else return)
         seedingFromRing = false
         val settings = MeasurementSettings(
             hrEnabled = true, hrIntervalMinutes = interval,   // HR forced on (see handleRawNotify)
@@ -377,7 +435,8 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = s.spo2Enabled))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = s.stressEnabled))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = s.hrvEnabled))
-        writer?.enqueue(encoder.writeTempPref(enabled = s.temperatureEnabled))
+        // No temperature sensor on RY02KA: nothing to switch.
+        if (!isRy02ka) writer?.enqueue(encoder.writeTempPref(enabled = s.temperatureEnabled))
     }
 
     /** Build the user-preferences command from the stored profile, falling back to the encoder's
@@ -597,6 +656,8 @@ class ColmiSyncEngine(
     private fun requestSleep() { writer?.enqueue(encoder.bigDataSleep()) }
 
     private fun requestTemperature() {
+        // RY02KA has no temperature sensor: its reply carries nothing, so the run ends at HRV.
+        if (isRy02ka) { finishSync(); return }
         if (supportsIntervalTemp) {
             // Modern path (QRing gates on the same 0x3C bit): per-day interval series, starting
             // at today packet 0; handleBigDataComplete drives packet/day continuation.
@@ -717,6 +778,13 @@ class ColmiSyncEngine(
     // MARK: Measurement actions
 
     override fun startHeartRate() {
+        // RY02KA has no 0x1E handler (it answers 9e ee) and its 0x69 01 reports only 25-30 s into
+        // each one-shot run, so the fallback chain delivers ~10 readings a minute in one burst. Its
+        // 0x69 06 stream reports about once a second instead.
+        if (isRy02ka) {
+            startContinuousHeartRateStream()
+            return
+        }
         // A ring that has already refused 0x1E on this connection never gets asked again — go
         // straight to the 0x69 stream the vendor app itself uses (see onRealtimeHeartRateRejected).
         if (realtimeRejected) {
@@ -767,6 +835,48 @@ class ColmiSyncEngine(
         realtimeHRActive = false
         realtimeKeepaliveJob?.cancel(); realtimeKeepaliveJob = null
         startFallbackHeartRateStream()
+    }
+
+    /**
+     * Live heart rate on RY02KA's continuous stream (`0x69 06 01`).
+     *
+     * Read from the firmware, not yet captured from a ring: after ~10 s of warm-up it sends
+     * `[0x69, 06, 00, bpm]` about once a second while the ring is worn, and a nonzero status when it
+     * isn't (which the decoder turns into [RingDecodedEvent.HeartRateComplete], as on every other
+     * reading type). It runs until stopped; there is no ring-side time-out while worn.
+     *
+     * The keepalive mirrors the fallback stream's: it re-arms only after [FALLBACK_STREAM_IDLE_MS] of
+     * silence, because a repeated start restarts the warm-up. A stream that has produced nothing at
+     * all by then is not working on this build, so the session moves to the `0x69 01` chain rather
+     * than spending the rest of a workout blind.
+     */
+    private fun startContinuousHeartRateStream() {
+        if (continuousHRActive) return
+        continuousHRActive = true
+        continuousFramesSeen = false
+        lastContinuousFrameAt = System.currentTimeMillis()
+        writer?.enqueue(encoder.continuousHeartRate(enable = true))
+        realtimeKeepaliveJob?.cancel()
+        realtimeKeepaliveJob = scope.launch {
+            while (isActive) {
+                delay(REALTIME_KEEPALIVE_MS)
+                continuousKeepaliveTick(System.currentTimeMillis())
+            }
+        }
+    }
+
+    /** One pass of the continuous stream's keepalive; see [startContinuousHeartRateStream]. */
+    internal fun continuousKeepaliveTick(now: Long) {
+        if (!continuousHRActive) return
+        if (now - lastContinuousFrameAt < FALLBACK_STREAM_IDLE_MS) return
+        if (!continuousFramesSeen) {
+            continuousHRActive = false
+            writer?.enqueue(encoder.continuousHeartRate(enable = false))
+            startFallbackHeartRateStream()
+            return
+        }
+        lastContinuousFrameAt = now
+        writer?.enqueue(encoder.continuousHeartRate(enable = true))
     }
 
     /**
@@ -875,6 +985,12 @@ class ColmiSyncEngine(
 
     override fun stopHeartRate() {
         realtimeKeepaliveJob?.cancel(); realtimeKeepaliveJob = null
+        if (continuousHRActive) {
+            continuousHRActive = false
+            // Not added to stopsAwaitingAck: RY02KA acknowledges a 0x6A only for a measurement that
+            // ran 25 s on its spot clock, and a running 0x69 06 stream holds that clock at ~11 s.
+            writer?.enqueue(encoder.continuousHeartRate(enable = false))
+        }
         if (manualHRActive) {
             manualHRActive = false
             stopsAwaitingAck += MeasurementKind.HEART_RATE
@@ -887,6 +1003,9 @@ class ColmiSyncEngine(
 
     override fun measureHeartRateSpot() {
         stopsAwaitingAck -= MeasurementKind.HEART_RATE
+        // The spot run takes over the ring's one realtime engine; a continuous stream's keepalive
+        // must not restart 0x69 06 underneath it.
+        continuousHRActive = false
         manualHRActive = true
         lastManualBpm = 0
         writer?.enqueue(encoder.manualHeartRate(enable = true))
@@ -909,6 +1028,7 @@ class ColmiSyncEngine(
         // the HR bookkeeping with it, or that restart short-circuits on a stream the ring has
         // already stopped and the workout shows no bpm until the idle keepalive re-arms.
         manualHRActive = false
+        continuousHRActive = false
         stopsAwaitingAck += MeasurementKind.SPO2
         writer?.enqueue(encoder.manualSpO2(enable = false))
     }
@@ -926,6 +1046,7 @@ class ColmiSyncEngine(
     override fun stopSpotVital(vital: SpotVital, settled: Double?) {
         // Same teardown as stopSpO2: `0x6A` stops the ring's whole realtime engine, HR included.
         manualHRActive = false
+        continuousHRActive = false
         val lastRaw = settled?.let { ColmiDecoder.spotVitalRaw(vital, it) } ?: 0
         writer?.enqueue(encoder.spotVital(vital, enable = false, lastRaw = lastRaw))
     }

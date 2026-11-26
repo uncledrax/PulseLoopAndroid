@@ -58,6 +58,8 @@ class ColmiDriver(private val writer: RingCommandWriter) : WearableDriver {
 
     override fun firmwareRevisionDidUpdate(revision: String) {
         if (ColmiFirmware.reportsUnmeasuredSleepStages(revision)) sleepStagesUnmeasured = true
+        // The engine keys RY02KA's handshake, temperature skip, spot window and live-HR stream on it.
+        engine.firmwareRevisionDidUpdate(revision)
     }
 
     override fun ingest(data: ByteArray, from: String): List<RingDecodedEvent> {

@@ -176,6 +176,9 @@ object VitalsCardFactory {
         val latestSpo2: Double? = null,
         /** The SpO₂ series includes hourly readings computed from heart rate (issue #103). */
         val spo2Estimated: Boolean = false,
+        /** The ring calculated this stress series from heart rate rather than measuring it (RY02KA,
+         *  `WearableCapability.STRESS_FROM_HEART_RATE`). Flags the stress card as estimated. */
+        val stressFromHeartRate: Boolean = false,
         /** Resting/peak HR estimates for the HR subtitle (iOS TodaySummary fields). */
         val restingHr: Double? = null,
         val peakHr: Double? = null,
@@ -314,7 +317,11 @@ object VitalsCardFactory {
             samples = samples, zones = VitalsThresholdEngine.zones(metric, profile),
             yDomain = 0.0..100.0, referenceBands = emptyList(), dashedRules = emptyList(),
             trend = TrendSummary.compute(samples, metric),
-            sourceQuality = quality, isEstimated = false, confidenceLabel = null,
+            sourceQuality = quality,
+            // Stress a ring computes from heart rate carries the ESTIMATED chip on the Vitals card and
+            // "Estimated from heart rate" on the Today tile, as hourly SpO₂ does (issue #103).
+            isEstimated = metric == MetricKind.STRESS && inputs.stressFromHeartRate,
+            confidenceLabel = null,
             lastUpdatedText = lastUpdated(samples.lastOrNull()?.timestampMs, inputs.nowMs),
             isEmpty = latest == null,
         )

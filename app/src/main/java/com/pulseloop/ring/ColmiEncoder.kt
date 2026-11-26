@@ -155,6 +155,26 @@ object ColmiEncoder {
         byteArrayOf(ColmiCommandID.REALTIME_HEART_RATE.toByte(), 0x03)
 
     /**
+     * Continuous live heart rate on the `0x69` family ([ColmiCommandID.RT_HEART_RATE_CONTINUOUS]):
+     * start `[0x69, 0x06, 0x01]`, stop `[0x6A, 0x06, 0x00, 0x00]`. RY02KA only — see
+     * [ColmiFirmware.isRy02ka]. Its stop is not acknowledged: the firmware answers a `0x6A` only for a
+     * measurement that has run 25 s on its spot clock, which a running stream never reaches.
+     */
+    fun continuousHeartRate(enable: Boolean): ByteArray = if (enable) {
+        byteArrayOf(
+            ColmiCommandID.MANUAL_HEART_RATE.toByte(),
+            ColmiCommandID.RT_HEART_RATE_CONTINUOUS.toByte(),
+            ColmiCommandID.RT_CONTINUOUS_START.toByte(),
+        )
+    } else {
+        byteArrayOf(
+            ColmiCommandID.REALTIME_STOP.toByte(),
+            ColmiCommandID.RT_HEART_RATE_CONTINUOUS.toByte(),
+            0x00, 0x00,
+        )
+    }
+
+    /**
      * On-demand SpO₂ spot measurement via the real-time command family (0x69/0x6A).
      * Start: [0x69, reading_type=SPO2(3), action=START(1)]; the ring streams
      * [0x69, 3, error, value, …] frames until stopped. Stop: [0x6A, 3, 0, 0].

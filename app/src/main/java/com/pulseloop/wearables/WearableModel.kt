@@ -48,6 +48,14 @@ data class WearableModel(
      * when the ring's advertised name identifies this model, never from the carousel fallback.
      */
     val extraCapabilities: Set<WearableCapability> = emptySet(),
+    /**
+     * Capabilities this model's family advertises but this model lacks, taken out of the connected
+     * ring's set when the model is resolved — the inverse of [extraCapabilities], under the same
+     * rule: only when the ring's advertised name identifies this model, and only once the absence
+     * is shown on the hardware or its firmware. The Kogan Aura (RY02KA) has no temperature sensor:
+     * its firmware never answers the temperature-pref read and returns no temperature history.
+     */
+    val removedCapabilities: Set<WearableCapability> = emptySet(),
 ) {
     companion object {
         /**
@@ -105,7 +113,12 @@ data class WearableModel(
         // The Kogan Aura is an Australian rebadge of the Colmi R02 on RY02KA hardware: it advertises
         // its full name with no `_<hex>` serial, reports hardware `RY02KA_V3.0`, and runs QRing
         // firmware (`RY02KA_3.00.31`) over the same UART/big-data pair as the rest of this family.
-        val KOGAN_AURA = colmi("kogan-aura", "Kogan Aura", "Kogan", "^Kogan Aura$", R.drawable.ring_colmi_r02)
+        // Read from that firmware: no temperature sensor, and its stress figure is a formula of
+        // heart rate rather than a measurement (see ColmiFirmware.isRy02ka).
+        val KOGAN_AURA = colmi("kogan-aura", "Kogan Aura", "Kogan", "^Kogan Aura$", R.drawable.ring_colmi_r02,
+            blurb = "HR · SpO₂ · HRV · Sleep",
+            extraCapabilities = setOf(WearableCapability.STRESS_FROM_HEART_RATE),
+            removedCapabilities = setOf(WearableCapability.TEMPERATURE, WearableCapability.MANUAL_TEMPERATURE))
 
         /**
          * YCBT / SmartHealth family — a distinct protocol from the QRing Colmi rings above, so this
@@ -230,13 +243,16 @@ data class WearableModel(
             @DrawableRes imageRes: Int?,
             requiresOsBond: Boolean = false,
             extraCapabilities: Set<WearableCapability> = emptySet(),
+            removedCapabilities: Set<WearableCapability> = emptySet(),
+            blurb: String = "HR · SpO₂ · HRV · Stress · Temp · Sleep",
         ) = WearableModel(
             id = id, displayName = name, brand = brand, family = RingDeviceType.COLMI_R02,
-            tint = PulseColors.hrv, blurb = "HR · SpO₂ · HRV · Stress · Temp · Sleep",
+            tint = PulseColors.hrv, blurb = blurb,
             advertisedNamePatterns = listOf(pattern),
             imageRes = imageRes,
             requiresOsBond = requiresOsBond,
             extraCapabilities = extraCapabilities,
+            removedCapabilities = removedCapabilities,
         )
 
         private fun ycbt(
