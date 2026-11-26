@@ -230,12 +230,10 @@ fun VitalsScreen(
                 emptyText = "No stress data yet — take a measurement.",
                 // Issue #67: say so on the card itself. A derived figure presented as a measurement
                 // would be worse than the empty card it replaces.
-                footnote = when {
-                    state.stressIsDerived -> "Estimated from HRV — your ring doesn't measure stress"
-                    // RY02KA: the ring sends a stress figure, but computes it from heart rate alone.
-                    state.stressFromHeartRate -> "Calculated by your ring from heart rate — not a stress measurement"
-                    else -> null
-                },
+                // A ring that calculates stress from heart rate (RY02KA, state.stressFromHeartRate) is
+                // not labelled through this footnote: its card is flagged estimated, which shows the
+                // ESTIMATED chip in the header and hides the single-line header footer this would use.
+                footnote = if (state.stressIsDerived) "Estimated from HRV — your ring doesn't measure stress" else null,
                 onTap = { navController?.navigate("vitals/stress") },
             )
             DashboardCard.FATIGUE -> VitalGaugeCardItem(

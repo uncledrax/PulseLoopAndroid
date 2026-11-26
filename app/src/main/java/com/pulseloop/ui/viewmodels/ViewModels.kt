@@ -881,6 +881,7 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
         latestHr = latestHr?.toDouble(),
         latestSpo2 = latestSpo2?.toDouble(),
         spo2Estimated = spo2IsEstimated,
+        stressFromHeartRate = stressFromHeartRate,
         restingHr = restingHr,
         peakHr = peakHr,
         unitSystem = units,

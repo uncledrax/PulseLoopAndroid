@@ -785,8 +785,12 @@ More rules for this ring, read from its firmware's disassembly (stock `RY02KA_3.
   whichever order the two arrive.
 - **Stress is a formula of heart rate**: HR/4 + 2·HR − the session's highest and lowest HR + an
   extra term above 75 bpm, folded into 20–69. No HRV. Per issue #67 it is labelled where shown
-  (`WearableCapability.STRESS_FROM_HEART_RATE` → `VitalsState.stressFromHeartRate` /
-  `DetailState.stressFromHeartRate`). The Today tile still carries no label, as for derived stress.
+  (`WearableCapability.STRESS_FROM_HEART_RATE` → `VitalsState.stressFromHeartRate`). The card is
+  flagged estimated (`VitalsCardFactory.Inputs.stressFromHeartRate` → `VitalCardState.isEstimated`),
+  which is the ESTIMATED chip on the Vitals card and "Estimated from heart rate" on the Today
+  tile; the detail chart carries its own disclaimer (`DetailState.stressFromHeartRate`). Don't
+  label it through the Vitals card's footnote: that is one header line with an ellipsis, and it
+  is hidden whenever the chip shows. The home-screen widget is unlabelled, as for estimated SpO₂.
 - **Its real-time timer ticks every 500 ms.** A `0x69 01` spot measurement reports only on ticks
   51–59 (25–30 s in) and then stops itself, so the spot HR ceiling is 35 s here
   (`ColmiFirmware.RY02KA_SPOT_HEART_RATE_SECONDS`), and the `0x1E`→`0x69 01` live-HR fallback gave
@@ -799,10 +803,16 @@ More rules for this ring, read from its firmware's disassembly (stock `RY02KA_3.
   `0x82D65A`). Nothing in the app sends `0xA1`; keep it that way.
 - **Values are shaped inside the firmware's algorithm libraries, in stock and in PATCH1–4 alike**
   (the patches remove the app-layer random fills, not these): resting HR above 95 at first lock is
-  folded to 90 + HR mod 10; during movement HR may not fall and is pushed up 1 bpm/s below 100;
-  HRV substitutes the expected beat interval for outliers, clamps beat-to-beat differences to
-  8–108 ms and folds values above 80 into 80–89; SpO₂ is mapped through a table that floors it at
-  79 % and a steady 99 % is varied to 97–99 %. Don't build insight logic that treats these as clean.
+  folded to 90 + HR mod 10; in strong movement HR is pushed up 1 bpm/s below about 110–120 and may
+  not fall at 120–139; HRV substitutes the expected beat interval for outliers, clamps beat-to-beat
+  differences to 8–108 ms and folds values above 80 into 80–89; SpO₂ is mapped through a table that
+  floors it at 79 % and a steady 99 % is varied to 97–99 %. PATCH6 removes the fold, the forced
+  rise, the HRV fold and the SpO₂ variation, and reads all-day HRV at 35 s instead of 15 s. PATCH5
+  was an earlier attempt that left one forced-rise path in place. The rest stays, so don't build
+  insight logic that treats these as clean.
+- **A logged SpO₂ reading is not always one the ring's library called valid.** After 20 s without
+  reaching its valid state the library returns its current value anyway, and the ring logs it like
+  any other. Nothing on the wire tells the two apart, so an isolated low reading is weak evidence.
 - **History synced from stock firmware contains invented values** — failed readings filled with
   random HR 40–49, SpO₂ 93–99, HRV 27–36 / 30–49, stress 20–54 — indistinguishable from real rows.
   Rows synced before a user flashed a patch can't be cleaned automatically.

@@ -296,6 +296,15 @@ private fun ChartTile(card: VitalCardState, values: List<Double>, modifier: Modi
 @Composable
 private fun GaugeTile(card: VitalCardState, modifier: Modifier, onTap: () -> Unit) {
     TodayTile(label = card.title, color = ZonePalette.accent(card.metric), modifier = modifier, onTap = onTap) {
+        // A ring that calculates its stress figure from heart rate (RY02KA) is labelled here as
+        // hourly SpO₂ is in ChartTile (issue #67's rule: wherever it is shown). Stress only — this
+        // tile also draws glucose, which is estimated but not from heart rate.
+        if (card.metric == MetricKind.STRESS && card.isEstimated) {
+            Text(
+                "Estimated from heart rate", fontSize = 11.sp, color = ZonePalette.ZoneAmber,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             // A gauge needs only ONE reading — card.isEmpty is chart logic (<2 samples) and
             // would blank the glucose gauge (one fasting reading per day).
